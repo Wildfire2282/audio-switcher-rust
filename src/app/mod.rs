@@ -8,10 +8,10 @@ use crate::platform::hook;
 use crate::ui::{format_tooltip, TrayWrapper, WheelState};
 use handler::MenuAction;
 
-/// App owns all runtime state. Replaces scattered `static Atomic*` + procedural main loop.
-pub struct App {
+/// App owns all runtime state. Generic over `AudioBackend` for test injection.
+pub struct App<B: AudioBackend = RealBackend> {
     cfg: AppConfig,
-    backend: RealBackend,
+    backend: B,
     tray: TrayWrapper,
     wheel: WheelState,
     is_hover: bool,
@@ -25,8 +25,17 @@ pub struct App {
     _com: crate::platform::ComGuard,
 }
 
-impl App {
+impl App<RealBackend> {
     pub fn new(com: crate::platform::ComGuard) -> Self {
+        Self::with_backend(com, RealBackend::new())
+    }
+}
+
+impl<B: AudioBackend> App<B> {
+    pub fn with_backend(com: crate::platform::ComGuard, mut backend: B) -> Self
+    where
+        B: crate::audio::BackendWithSnapshot,
+    {
         let cfg = AppConfig::load();
         let autostart = cfg.autostart;
         std::thread::spawn(move || {
@@ -34,15 +43,12 @@ impl App {
                 let _ = crate::platform::set_autostart(true);
             }
         });
-
         let mut tray = TrayWrapper::new(&cfg, &[], None, false);
-        let mut backend = RealBackend::new();
         let snap = backend.fetch_snapshot_clamped(&cfg);
         let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
         tray.rebuild_menu(&cfg, &snap.devices, default_id.as_deref(), snap.mute);
         tray.update_tooltip(format_tooltip(snap.default_device.as_ref(), snap.volume, snap.mute, &cfg.lang));
         tray.update_icon(snap.mute);
-
         Self {
             cfg,
             backend,
@@ -167,150 +173,134 @@ impl App {
         }
     }
 
-    pub fn run(mut self) {
-        let menu_rx = muda::MenuEvent::receiver();
+    // ---- handlers extracted to keep `run` at ~30 lines ----
+    fn pump_messages() {
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE};
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+    fn maybe_install_hook(&mut self) {
+        if self.hook.is_none() && Instant::now() >= self.hook_install_at {
+            self.hook = hook::WheelHook::install();
+        }
+    }
+    fn poll_theme(&mut self) {
+        if self.last_theme_check.elapsed() <= Duration::from_millis(1800) {
+            return;
+        }
+        self.last_theme_check = Instant::now();
+        let dark = crate::ui::is_dark_mode();
+        if dark != self.last_dark {
+            self.last_dark = dark;
+            #[cfg(windows)]
+            crate::ui::invalidate_dark_mode_cache();
+            if let Ok(m) = self.backend.get_mute() {
+                self.tray.update_icon(m);
+            }
+        }
+    }
+    fn poll_tray(&mut self) {
         let tray_rx = tray_icon::TrayIconEvent::receiver();
-
-        loop {
-            #[cfg(windows)]
-            unsafe {
-                use windows::Win32::UI::WindowsAndMessaging::{
-                    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
-                };
-                let mut msg = MSG::default();
-                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
+        let Ok(event) = tray_rx.try_recv() else { return; };
+        match event {
+            tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Middle, button_state: tray_icon::MouseButtonState::Up, .. } => {
+                if let Ok(m) = self.backend.get_mute() {
+                    let _ = self.backend.set_mute(!m);
+                    self.refresh_ui();
                 }
+                self.is_hover = true;
+                self.last_hover = Instant::now();
+                self.wheel.clear();
             }
-
-            if self.hook.is_none() && Instant::now() >= self.hook_install_at {
-                self.hook = hook::WheelHook::install();
+            tray_icon::TrayIconEvent::Enter { .. } | tray_icon::TrayIconEvent::Move { .. } | tray_icon::TrayIconEvent::Click { .. } => {
+                self.is_hover = true;
+                self.last_hover = Instant::now();
+                self.wheel.clear();
             }
-
-            if self.last_theme_check.elapsed() > Duration::from_millis(1800) {
-                self.last_theme_check = Instant::now();
-                let dark = crate::ui::is_dark_mode();
-                if dark != self.last_dark {
-                    self.last_dark = dark;
-                    #[cfg(windows)]
-                    crate::ui::invalidate_dark_mode_cache();
-                    if let Ok(m) = self.backend.get_mute() {
-                        self.tray.update_icon(m);
-                    }
-                }
+            tray_icon::TrayIconEvent::Leave { .. } => {
+                self.is_hover = false;
+                self.wheel.clear();
             }
-
-            if let Ok(event) = tray_rx.try_recv() {
-                match event {
-                    tray_icon::TrayIconEvent::Click {
-                        button: tray_icon::MouseButton::Middle,
-                        button_state: tray_icon::MouseButtonState::Up,
-                        ..
-                    } => {
-                        if let Ok(m) = self.backend.get_mute() {
-                            let _ = self.backend.set_mute(!m);
-                            self.refresh_ui();
-                        }
-                        self.is_hover = true;
-                        self.last_hover = Instant::now();
-                        self.wheel.clear();
-                    }
-                    tray_icon::TrayIconEvent::Enter { .. }
-                    | tray_icon::TrayIconEvent::Move { .. }
-                    | tray_icon::TrayIconEvent::Click { .. } => {
-                        self.is_hover = true;
-                        self.last_hover = Instant::now();
-                        self.wheel.clear();
-                    }
-                    tray_icon::TrayIconEvent::Leave { .. } => {
-                        self.is_hover = false;
-                        self.wheel.clear();
-                    }
-                    tray_icon::TrayIconEvent::DoubleClick { .. } => {
-                        self.is_hover = true;
-                        self.last_hover = Instant::now();
-                        self.wheel.clear();
-                    }
-                    _ => {}
-                }
+            tray_icon::TrayIconEvent::DoubleClick { .. } => {
+                self.is_hover = true;
+                self.last_hover = Instant::now();
+                self.wheel.clear();
             }
-
-            #[cfg(windows)]
-            {
-                let need_cursor = hook::peek_pending()
-                    || self.is_hover
-                    || self.last_hover.elapsed() < Duration::from_millis(2500);
-                if need_cursor && self.last_cursor_check.elapsed() > Duration::from_millis(80) {
-                    self.last_cursor_check = Instant::now();
-                    let over = hook::cursor_over_tray(&self.tray);
-                    self.last_cursor_over = over;
-                    if over {
-                        if !self.is_hover {
-                            self.is_hover = true;
-                            self.wheel.clear();
-                        }
-                        self.last_hover = Instant::now();
-                    }
-                }
-            }
-
-            if let Ok(event) = menu_rx.try_recv() {
-                self.handle_menu(&event.id.0);
-            }
-
-            if hook::take_pending() {
-                let delta = hook::take_delta();
-                if (self.is_hover
-                    || self.last_hover.elapsed() < Duration::from_millis(2500)
-                    || self.last_cursor_over)
-                    && delta != 0
-                {
+            _ => {}
+        }
+    }
+    fn poll_cursor(&mut self) {
+        #[cfg(windows)]
+        {
+            let need = hook::peek_pending() || self.is_hover || self.last_hover.elapsed() < Duration::from_millis(2500);
+            if need && self.last_cursor_check.elapsed() > Duration::from_millis(80) {
+                self.last_cursor_check = Instant::now();
+                let over = hook::cursor_over_tray(&self.tray);
+                self.last_cursor_over = over;
+                if over {
+                    if !self.is_hover { self.is_hover = true; self.wheel.clear(); }
                     self.last_hover = Instant::now();
-                    let step = self.wheel.push(Instant::now(), self.cfg.wheel_acceleration, delta);
-                    let total = WheelState::total_step(delta, step);
-                    if let Ok(vol) = self.backend.get_volume() {
-                        let new_vol = (vol as i32 + total).clamp(0, 100) as u32;
-                        let clamped = crate::config::clamp_volume(new_vol, &self.cfg);
-                        let _ = self.backend.set_volume(clamped);
-                        self.update_tooltip_and_icon();
-                    }
                 }
             }
+        }
+    }
+    fn poll_menu(&mut self) {
+        let menu_rx = muda::MenuEvent::receiver();
+        if let Ok(event) = menu_rx.try_recv() { self.handle_menu(&event.id.0); }
+    }
+    fn poll_wheel(&mut self) {
+        if !hook::take_pending() { return; }
+        let delta = hook::take_delta();
+        if !(self.is_hover || self.last_hover.elapsed() < Duration::from_millis(2500) || self.last_cursor_over) || delta == 0 { return; }
+        self.last_hover = Instant::now();
+        let step = self.wheel.push(Instant::now(), self.cfg.wheel_acceleration, delta);
+        let total = WheelState::total_step(delta, step);
+        if let Ok(vol) = self.backend.get_volume() {
+            let new_vol = (vol as i32 + total).clamp(0, 100) as u32;
+            let clamped = crate::config::clamp_volume(new_vol, &self.cfg);
+            let _ = self.backend.set_volume(clamped);
+            self.update_tooltip_and_icon();
+        }
+    }
+    fn poll_devices(&mut self) {
+        if self.backend.poll_device_changed() || crate::audio::take_device_changed() {
+            let _ = self.backend.clamp_volume_if_needed(&self.cfg);
+            self.refresh_ui();
+        }
+    }
+    fn wait(&self) {
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT};
+            let has_pending = hook::peek_pending();
+            if has_pending {
+                let _ = MsgWaitForMultipleObjectsEx(Some(&[]), 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            } else {
+                let remaining = self.last_theme_check.checked_add(Duration::from_millis(1800)).and_then(|t| t.checked_duration_since(Instant::now())).map(|d| d.as_millis() as u32).unwrap_or(0).min(500);
+                let _ = MsgWaitForMultipleObjectsEx(Some(&[]), remaining.max(8), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            }
+        }
+        #[cfg(not(windows))]
+        std::thread::sleep(Duration::from_millis(if hook::peek_pending() { 8 } else { 24 }));
+    }
 
-            if self.backend.poll_device_changed() || crate::audio::take_device_changed() {
-                let _ = self.backend.clamp_volume_if_needed(&self.cfg);
-                self.refresh_ui();
-            }
-
-            #[cfg(windows)]
-            unsafe {
-                use windows::Win32::UI::WindowsAndMessaging::{
-                    MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
-                };
-                let has_pending = hook::peek_pending();
-                if has_pending {
-                    let _ = MsgWaitForMultipleObjectsEx(Some(&[]), 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-                } else {
-                    let remaining = self
-                        .last_theme_check
-                        .checked_add(Duration::from_millis(1800))
-                        .and_then(|t| t.checked_duration_since(Instant::now()))
-                        .map(|d| d.as_millis() as u32)
-                        .unwrap_or(0)
-                        .min(500);
-                    let timeout = remaining.max(8);
-                    let _ = MsgWaitForMultipleObjectsEx(Some(&[]), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-                }
-            }
-            #[cfg(not(windows))]
-            {
-                if hook::peek_pending() {
-                    std::thread::sleep(Duration::from_millis(8));
-                } else {
-                    std::thread::sleep(Duration::from_millis(24));
-                }
-            }
+    pub fn run(mut self) {
+        loop {
+            Self::pump_messages();
+            self.maybe_install_hook();
+            self.poll_theme();
+            self.poll_tray();
+            self.poll_cursor();
+            self.poll_menu();
+            self.poll_wheel();
+            self.poll_devices();
+            self.wait();
         }
     }
 }

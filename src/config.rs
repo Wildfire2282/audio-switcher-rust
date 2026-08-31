@@ -109,13 +109,17 @@ impl AppConfig {
         }
     }
 
-    /// Non-blocking save to default path: spawns background thread with atomic tmp+rename.
-    pub fn save(&self) -> std::io::Result<()> {
+    /// Non-blocking save, returns handle for joining in tests. Fire-and-forget callers may drop it.
+    pub fn save(&self) -> std::thread::JoinHandle<std::io::Result<()>> {
         let cfg = self.clone();
         let path = Self::config_path();
-        std::thread::spawn(move || {
-            let _ = cfg.save_to(&path);
-        });
+        std::thread::spawn(move || cfg.save_to(&path))
+    }
+
+    /// Legacy fire-and-forget wrapper (kept for compatibility).
+    #[allow(dead_code)]
+    pub fn save_fire_and_forget(&self) -> std::io::Result<()> {
+        let _ = self.save();
         Ok(())
     }
 

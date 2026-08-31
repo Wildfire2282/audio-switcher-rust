@@ -190,15 +190,26 @@ impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for Notifier_Impl 
 }
 
 #[cfg(windows)]
+struct NotifierHolder(#[allow(dead_code)] IMMNotificationClient);
+#[cfg(windows)]
+unsafe impl Send for NotifierHolder {}
+#[cfg(windows)]
+unsafe impl Sync for NotifierHolder {}
+#[cfg(windows)]
+static NOTIFIER_HOLDER: std::sync::OnceLock<NotifierHolder> = std::sync::OnceLock::new();
+
+#[cfg(windows)]
 fn register_notification_client() {
+    if NOTIFIER_HOLDER.get().is_some() {
+        return;
+    }
     unsafe {
         if let Ok(enumerator) =
             CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
         {
             let notifier: IMMNotificationClient = Notifier.into();
             let _ = enumerator.RegisterEndpointNotificationCallback(&notifier);
-            // leak to keep alive for process lifetime
-            std::mem::forget(notifier);
+            let _ = NOTIFIER_HOLDER.set(NotifierHolder(notifier));
         }
     }
 }
@@ -323,18 +334,18 @@ impl RealBackend {
             let enumerator = if let Some(e) = &self.cached_enumerator {
                 e.clone()
             } else {
-                Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?
+                Self::get_enumerator().map_err(AudioError::from)?
             };
             let dev = enumerator
                 .GetDefaultAudioEndpoint(eRender, eMultimedia)
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             let vol: IAudioEndpointVolume = dev
                 .Activate(CLSCTX_ALL, None)
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             let scalar = vol
                 .GetMasterVolumeLevelScalar()
-                .map_err(|e| AudioError::Com(e.to_string()))?;
-            let m = vol.GetMute().map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
+            let m = vol.GetMute().map_err(AudioError::from)?;
             Ok(((scalar * 100.0).round() as u32, m.as_bool()))
         }
     }
@@ -356,10 +367,10 @@ impl RealBackend {
         unsafe {
             let collection: IMMDeviceCollection = enumerator
                 .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             let count = collection
                 .GetCount()
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             let mut devices = Vec::new();
             for i in 0..count {
                 if let Ok(dev) = collection.Item(i) {
@@ -381,6 +392,7 @@ impl RealBackend {
         }
     }
 
+    #[allow(dead_code)]
     pub fn poll_device_changed(&mut self) -> bool {
         if take_device_changed() {
             self.clear_cache();
@@ -442,11 +454,43 @@ impl RealBackend {
 }
 
 #[cfg(windows)]
+impl crate::audio::BackendWithSnapshot for RealBackend {
+    fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot {
+        // forward to inherent impl
+        RealBackend::fetch_snapshot_clamped(self, cfg)
+    }
+}
+
+#[cfg(windows)]
 impl AudioBackend for RealBackend {
+    fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
+        // optimized: single Activate, reuse cached_enumerator
+        unsafe {
+            let enumerator = if let Some(e) = &self.cached_enumerator {
+                e.clone()
+            } else {
+                Self::get_enumerator().map_err(AudioError::from)?
+            };
+            let dev = enumerator
+                .GetDefaultAudioEndpoint(eRender, eMultimedia)
+                .map_err(AudioError::from)?;
+            let vol: IAudioEndpointVolume = dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
+            let scalar = vol.GetMasterVolumeLevelScalar().map_err(AudioError::from)?;
+            let m = vol.GetMute().map_err(AudioError::from)?;
+            Ok(((scalar * 100.0).round() as u32, m.as_bool()))
+        }
+    }
+    fn poll_device_changed(&mut self) -> bool {
+        if take_device_changed() {
+            self.clear_cache();
+            return true;
+        }
+        false
+    }
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
         let enumerator = self
             .enumerator_mut()
-            .map_err(|e| AudioError::Com(e.to_string()))?;
+            .map_err(AudioError::from)?;
         self.enumerate_devices_inner(&enumerator)
     }
 
@@ -488,13 +532,13 @@ impl AudioBackend for RealBackend {
         unsafe {
             let enumerator = self
                 .enumerator_mut()
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             let dev = enumerator
                 .GetDefaultAudioEndpoint(eRender, eMultimedia)
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             let vol: IAudioEndpointVolume = dev
                 .Activate(CLSCTX_ALL, None)
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             let mut last_err: Option<windows::core::Error> = None;
             for _ in 0..2 {
                 match vol.SetMasterVolumeLevelScalar(v, std::ptr::null()) {
@@ -518,13 +562,13 @@ impl AudioBackend for RealBackend {
         unsafe {
             let enumerator = self
                 .enumerator_mut()
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             let dev = enumerator
                 .GetDefaultAudioEndpoint(eRender, eMultimedia)
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             let vol: IAudioEndpointVolume = dev
                 .Activate(CLSCTX_ALL, None)
-                .map_err(|e| AudioError::Com(e.to_string()))?;
+                .map_err(AudioError::from)?;
             for _ in 0..2 {
                 match vol.SetMute(mute, std::ptr::null()) {
                     Ok(()) => return Ok(()),
@@ -587,6 +631,13 @@ impl RealBackend {
         Ok((50, false))
     }
 }
+#[cfg(not(windows))]
+impl crate::audio::BackendWithSnapshot for RealBackend {
+    fn fetch_snapshot_clamped(&mut self, _cfg: &AppConfig) -> AudioSnapshot {
+        AudioSnapshot::default()
+    }
+}
+
 #[cfg(not(windows))]
 impl AudioBackend for RealBackend {
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {

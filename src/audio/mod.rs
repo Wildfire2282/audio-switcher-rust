@@ -8,19 +8,39 @@ pub struct AudioDevice {
 
 #[derive(Debug, Clone)]
 pub enum AudioError {
-    Com(String),
+    /// COM / HRESULT failure, hr preserved for diagnostics
+    Com { hr: i32, msg: String },
     Failed(String),
+}
+
+impl AudioError {
+    #[allow(dead_code)]
+    pub fn com(hr: i32, msg: impl Into<String>) -> Self {
+        Self::Com { hr, msg: msg.into() }
+    }
+    #[allow(dead_code)]
+    pub fn com_msg(msg: impl Into<String>) -> Self {
+        Self::Com { hr: 0, msg: msg.into() }
+    }
 }
 
 impl std::fmt::Display for AudioError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AudioError::Com(s) => write!(f, "COM error: {}", s),
+            AudioError::Com { hr, msg } if *hr != 0 => write!(f, "COM 0x{:08X}: {}", *hr as u32, msg),
+            AudioError::Com { msg, .. } => write!(f, "COM error: {}", msg),
             AudioError::Failed(s) => write!(f, "failed: {}", s),
         }
     }
 }
 impl std::error::Error for AudioError {}
+
+#[cfg(windows)]
+impl From<windows::core::Error> for AudioError {
+    fn from(e: windows::core::Error) -> Self {
+        Self::Com { hr: e.code().0, msg: e.to_string() }
+    }
+}
 
 pub trait AudioBackend {
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError>;
@@ -31,6 +51,19 @@ pub trait AudioBackend {
     fn get_mute(&self) -> Result<bool, AudioError>;
     fn set_mute(&mut self, mute: bool) -> Result<(), AudioError>;
     fn clamp_volume_if_needed(&mut self, cfg: &AppConfig) -> Result<(), AudioError>;
+    /// Batch fetch volume+mute; default impl does two calls, RealBackend overrides with single Activate.
+    fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
+        Ok((self.get_volume()?, self.get_mute()?))
+    }
+    /// Whether external device change notification fired. Default false for mocks.
+    fn poll_device_changed(&mut self) -> bool {
+        false
+    }
+}
+
+/// Extension for backends that can provide a clamped snapshot in one COM round-trip.
+pub trait BackendWithSnapshot: AudioBackend {
+    fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot;
 }
 
 /// 快照：一次性获取枚举/默认/音量/静音，避免多次 CoCreateInstance
