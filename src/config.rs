@@ -120,32 +120,27 @@ impl AppConfig {
     }
 
     /// Synchronous atomic save: write to tmp alongside target then rename.
+    /// Uses `file_name + ".tmp"` to stay on same filesystem; handles Windows
+    /// `rename` semantics (fails if dest exists) via remove-retry.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self).unwrap();
-        // tmp in same dir to ensure same filesystem for atomic rename
         let tmp_path = {
-            let mut s = path.as_os_str().to_owned();
-            s.push(".tmp");
-            PathBuf::from(s)
+            let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "config.json".into());
+            path.with_file_name(format!("{}.tmp", file_name))
         };
-        // also fallback: if path is "config.json", tmp is "config.json.tmp"
         std::fs::write(&tmp_path, json.as_bytes())?;
+        if std::fs::rename(&tmp_path, path).is_ok() {
+            return Ok(());
+        }
+        let _ = std::fs::remove_file(path);
         match std::fs::rename(&tmp_path, path) {
             Ok(()) => Ok(()),
             Err(e) => {
-                // Windows rename may fail if destination exists under some conditions; retry after remove
-                let _ = std::fs::remove_file(path);
-                match std::fs::rename(&tmp_path, path) {
-                    Ok(()) => Ok(()),
-                    Err(_) => {
-                        // cleanup tmp on failure
-                        let _ = std::fs::remove_file(&tmp_path);
-                        Err(e)
-                    }
-                }
+                let _ = std::fs::remove_file(&tmp_path);
+                Err(e)
             }
         }
     }

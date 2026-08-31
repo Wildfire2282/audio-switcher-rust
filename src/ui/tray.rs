@@ -54,57 +54,14 @@ impl TrayWrapper {
     }
 }
 
-#[cfg(windows)]
 pub fn open_volume_mixer() {
-    unsafe {
-        use windows::core::PCWSTR;
-        use windows::Win32::UI::Shell::ShellExecuteW;
-        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
-        let op: Vec<u16> = "open\0".encode_utf16().collect();
-        let file: Vec<u16> = "SndVol.exe\0".encode_utf16().collect();
-        let res = ShellExecuteW(
-            None,
-            PCWSTR(op.as_ptr()),
-            PCWSTR(file.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
-        );
-        if res.0 as isize <= 32 {
-            let msg: Vec<u16> = "打开音量合成器失败\0".encode_utf16().collect();
-            let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
-            MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
-        }
+    if crate::platform::shell::open_file("SndVol.exe", None).is_err() {
+        crate::platform::shell::show_error("打开音量合成器失败");
     }
 }
 
-#[cfg(not(windows))]
-pub fn open_volume_mixer() {}
-
-#[cfg(windows)]
 pub fn open_sound_settings() {
-    unsafe {
-        use windows::core::PCWSTR;
-        use windows::Win32::UI::Shell::ShellExecuteW;
-        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
-        let op: Vec<u16> = "open\0".encode_utf16().collect();
-        let file: Vec<u16> = "control\0".encode_utf16().collect();
-        let params: Vec<u16> = "mmsys.cpl\0".encode_utf16().collect();
-        let res = ShellExecuteW(
-            None,
-            PCWSTR(op.as_ptr()),
-            PCWSTR(file.as_ptr()),
-            PCWSTR(params.as_ptr()),
-            PCWSTR::null(),
-            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
-        );
-        if res.0 as isize <= 32 {
-            let msg: Vec<u16> = "打开声音设置失败\0".encode_utf16().collect();
-            let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
-            MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
-        }
+    if crate::platform::shell::open_file("control", Some("mmsys.cpl")).is_err() {
+        crate::platform::shell::show_error("打开声音设置失败");
     }
 }
-
-#[cfg(not(windows))]
-pub fn open_sound_settings() {}
