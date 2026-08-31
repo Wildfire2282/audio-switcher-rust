@@ -243,12 +243,14 @@ impl<B: AudioBackend> App<B> {
             let need = hook::peek_pending() || self.is_hover || self.last_hover.elapsed() < Duration::from_millis(2500);
             if need && self.last_cursor_check.elapsed() > Duration::from_millis(80) {
                 self.last_cursor_check = Instant::now();
-                let over = hook::cursor_over_tray(&self.tray);
-                self.last_cursor_over = over;
-                if over {
-                    if !self.is_hover { self.is_hover = true; self.wheel.clear(); }
-                    self.last_hover = Instant::now();
+                if let Some(over) = hook::cursor_over_tray(&self.tray) {
+                    self.last_cursor_over = over;
+                    if over {
+                        if !self.is_hover { self.is_hover = true; self.wheel.clear(); }
+                        self.last_hover = Instant::now();
+                    }
                 }
+                // rect None -> keep last_cursor_over as-is, wheel still allowed via grace
             }
         }
     }

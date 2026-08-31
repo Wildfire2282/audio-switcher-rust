@@ -92,31 +92,28 @@ pub fn take_delta() -> i32 {
 }
 
 #[cfg(windows)]
-pub fn cursor_over_tray(wrapper: &crate::ui::tray::TrayWrapper) -> bool {
+pub fn cursor_over_tray(wrapper: &crate::ui::tray::TrayWrapper) -> Option<bool> {
     unsafe {
         use windows::Win32::Foundation::POINT;
         use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
         let mut pt = POINT { x: 0, y: 0 };
         if GetCursorPos(&mut pt).is_err() {
-            return false;
+            return Some(false);
         }
-        if let Some(rect) = wrapper.tray.rect() {
-            let x = pt.x as f64;
-            let y = pt.y as f64;
-            let pad = 16.0;
+        let rect = wrapper.tray.rect()?;
+        let x = pt.x as f64;
+        let y = pt.y as f64;
+        let pad = 16.0;
+        Some(
             x >= rect.position.x - pad
                 && x < rect.position.x + rect.size.width as f64 + pad
                 && y >= rect.position.y - pad
-                && y < rect.position.y + rect.size.height as f64 + pad
-        } else {
-            // rect unavailable (overflow/undocked) — don't falsely claim hover;
-            // rely on IS_HOVER + 2.5s grace instead.
-            false
-        }
+                && y < rect.position.y + rect.size.height as f64 + pad,
+        )
     }
 }
 
 #[cfg(not(windows))]
-pub fn cursor_over_tray(_wrapper: &crate::ui::tray::TrayWrapper) -> bool {
-    false
+pub fn cursor_over_tray(_wrapper: &crate::ui::tray::TrayWrapper) -> Option<bool> {
+    Some(false)
 }
