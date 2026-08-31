@@ -733,12 +733,13 @@ pub fn open_volume_mixer() {}
 pub fn open_sound_settings() {
     unsafe {
         let op: Vec<u16> = "open\0".encode_utf16().collect();
-        let file: Vec<u16> = "ms-settings:sound\0".encode_utf16().collect();
+        let file: Vec<u16> = "control\0".encode_utf16().collect();
+        let params: Vec<u16> = "mmsys.cpl\0".encode_utf16().collect();
         let res = windows::Win32::UI::Shell::ShellExecuteW(
             None,
             PCWSTR(op.as_ptr()),
             PCWSTR(file.as_ptr()),
-            PCWSTR::null(),
+            PCWSTR(params.as_ptr()),
             PCWSTR::null(),
             windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
         );
