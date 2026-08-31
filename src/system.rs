@@ -53,6 +53,7 @@ pub fn is_autostart_enabled() -> bool {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 pub fn show_autostart_error() {
     use windows::core::PCWSTR;
     use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};

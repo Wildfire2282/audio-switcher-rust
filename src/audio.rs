@@ -173,7 +173,6 @@ impl AudioBackend for MockBackend {
 pub mod real {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-    use std::sync::LazyLock;
     use windows::core::{Interface, GUID, HRESULT, PCWSTR};
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
@@ -590,17 +589,7 @@ pub mod real {
         }
 
         fn show_msgbox(msg: &str) {
-            unsafe {
-                use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
-                let wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
-                let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
-                MessageBoxW(
-                    None,
-                    PCWSTR(wide.as_ptr()),
-                    PCWSTR(title.as_ptr()),
-                    MB_OK | MB_ICONWARNING,
-                );
-            }
+            crate::platform::dialog::show_msgbox(msg);
         }
     }
 

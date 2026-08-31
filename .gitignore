@@ -22,6 +22,3 @@ Desktop.ini
 .env
 .env.*
 !.env.example
-
-# 方案（本地，不发布到 GitHub）
-方案.md

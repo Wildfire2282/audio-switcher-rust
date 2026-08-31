@@ -41,6 +41,7 @@ tempfile = "3.10"
 
 [build-dependencies]
 embed-manifest = "1.4"
+winres = "0.1.12"
 
 [[bin]]
 name = "audio-switcher-rust"
