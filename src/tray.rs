@@ -515,6 +515,7 @@ pub fn build_menu(
     cfg: &AppConfig,
     devices: &[AudioDevice],
     default_id: Option<&str>,
+    muted: bool,
 ) -> MenuHandles {
     let lang = cfg.lang.as_str();
 
@@ -531,7 +532,7 @@ pub fn build_menu(
         device_menu_items.push(item);
     }
 
-    let mute = CheckMenuItem::with_id("mute", tr("mute", lang), true, false, None);
+    let mute = CheckMenuItem::with_id("mute", tr("mute", lang), true, muted, None);
 
     let vol_enabled = CheckMenuItem::with_id(
         "vol_enabled",
@@ -657,7 +658,7 @@ impl TrayWrapper {
         default_id: Option<&str>,
         muted: bool,
     ) -> Self {
-        let handles = build_menu(cfg, devices, default_id);
+        let handles = build_menu(cfg, devices, default_id, muted);
         let icon = make_icon(muted, is_dark_mode());
         let tooltip = format_tooltip(
             default_id.and_then(|id| devices.iter().find(|d| d.id == id)),
@@ -688,8 +689,9 @@ impl TrayWrapper {
         cfg: &AppConfig,
         devices: &[AudioDevice],
         default_id: Option<&str>,
+        muted: bool,
     ) {
-        let new_handles = build_menu(cfg, devices, default_id);
+        let new_handles = build_menu(cfg, devices, default_id, muted);
         self.tray.set_menu(Some(Box::new(new_handles.menu.clone())));
         self.handles = new_handles;
     }

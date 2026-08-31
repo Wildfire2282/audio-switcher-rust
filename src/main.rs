@@ -142,15 +142,24 @@ fn main() {
 
         if let Ok(event) = tray_rx.try_recv() {
             match event {
-                tray_icon::TrayIconEvent::Click { button, .. } => {
-                    if button == tray_icon::MouseButton::Middle {
-                        if let Ok(m) = backend.get_mute() {
-                            let _ = backend.set_mute(!m);
-                            let new_mute = backend.get_mute().unwrap_or(!m);
-                            tray_wrapper.update_icon(new_mute);
-                            update_tooltip(&tray_wrapper, &backend, &cfg);
-                            tray::log_verbose(&cfg, &format!("middle mute toggle -> {}", new_mute));
-                        }
+                tray_icon::TrayIconEvent::Click {
+                    button: tray_icon::MouseButton::Middle,
+                    button_state: tray_icon::MouseButtonState::Up,
+                    ..
+                } => {
+                    if let Ok(m) = backend.get_mute() {
+                        let _ = backend.set_mute(!m);
+                        let new_mute = backend.get_mute().unwrap_or(!m);
+                        tray_wrapper.update_icon(new_mute);
+                        update_tooltip(&tray_wrapper, &backend, &cfg);
+                        let devs = backend.enumerate_devices().unwrap_or_default();
+                        tray_wrapper.rebuild_menu(
+                            &cfg,
+                            &devs,
+                            backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            new_mute,
+                        );
+                        tray::log_verbose(&cfg, &format!("middle mute toggle -> {}", new_mute));
                     }
                 }
                 tray_icon::TrayIconEvent::Enter { .. } => {
@@ -179,7 +188,12 @@ fn main() {
                         let devs = backend.enumerate_devices().unwrap_or_default();
                         let def = backend.get_default_device();
                         let def_id = def.as_ref().map(|d| d.id.as_str());
-                        tray_wrapper.rebuild_menu(&cfg, &devs, def_id);
+                        tray_wrapper.rebuild_menu(
+                            &cfg,
+                            &devs,
+                            def_id,
+                            backend.get_mute().unwrap_or(false),
+                        );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
                     Err(e) => {
@@ -212,6 +226,7 @@ fn main() {
                                 &cfg,
                                 &devs,
                                 backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                                new_mute,
                             );
                         }
                     }
@@ -226,6 +241,7 @@ fn main() {
                             &cfg,
                             &devs,
                             backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            backend.get_mute().unwrap_or(false),
                         );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
@@ -239,6 +255,7 @@ fn main() {
                             &cfg,
                             &devs,
                             backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            backend.get_mute().unwrap_or(false),
                         );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
@@ -252,6 +269,7 @@ fn main() {
                             &cfg,
                             &devs,
                             backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            backend.get_mute().unwrap_or(false),
                         );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
@@ -266,6 +284,7 @@ fn main() {
                                 &cfg,
                                 &devs,
                                 backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                                backend.get_mute().unwrap_or(false),
                             );
                             update_tooltip(&tray_wrapper, &backend, &cfg);
                         }
@@ -278,6 +297,7 @@ fn main() {
                             &cfg,
                             &devs,
                             backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            backend.get_mute().unwrap_or(false),
                         );
                     }
                     "verbose_log" => {
@@ -289,6 +309,7 @@ fn main() {
                             &cfg,
                             &devs,
                             backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            backend.get_mute().unwrap_or(false),
                         );
                     }
                     "open_mixer" => tray::open_volume_mixer(),
@@ -304,6 +325,7 @@ fn main() {
                                     &cfg,
                                     &devs,
                                     backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                                    backend.get_mute().unwrap_or(false),
                                 );
                             }
                             Err(_) => system::show_autostart_error(),
@@ -317,6 +339,7 @@ fn main() {
                             &cfg,
                             &devs,
                             backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            backend.get_mute().unwrap_or(false),
                         );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
@@ -328,6 +351,7 @@ fn main() {
                             &cfg,
                             &devs,
                             backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            backend.get_mute().unwrap_or(false),
                         );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
@@ -372,7 +396,12 @@ fn main() {
             let _ = backend.clamp_volume_if_needed(&cfg);
             let devs = backend.enumerate_devices().unwrap_or_default();
             let def = backend.get_default_device();
-            tray_wrapper.rebuild_menu(&cfg, &devs, def.as_ref().map(|d| d.id.as_str()));
+            tray_wrapper.rebuild_menu(
+                &cfg,
+                &devs,
+                def.as_ref().map(|d| d.id.as_str()),
+                backend.get_mute().unwrap_or(false),
+            );
             update_tooltip(&tray_wrapper, &backend, &cfg);
             tray::log_verbose(&cfg, "device change detected, menu rebuilt");
         }
