@@ -64,6 +64,32 @@ fn uninstall_wheel_hook() {
     }
 }
 
+#[cfg(windows)]
+fn cursor_over_tray(wrapper: &tray::TrayWrapper) -> bool {
+    unsafe {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut pt = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut pt).is_err() {
+            return false;
+        }
+        if let Some(rect) = wrapper.tray.rect() {
+            let x = pt.x as f64;
+            let y = pt.y as f64;
+            x >= rect.position.x
+                && x < rect.position.x + rect.size.width as f64
+                && y >= rect.position.y
+                && y < rect.position.y + rect.size.height as f64
+        } else {
+            false
+        }
+    }
+}
+#[cfg(not(windows))]
+fn cursor_over_tray(_wrapper: &tray::TrayWrapper) -> bool {
+    false
+}
+
 fn main() {
     let _guard = match system::SingleInstanceGuard::new("audio-switcher-rust-single-instance-v1") {
         Some(g) => g,
@@ -104,6 +130,9 @@ fn main() {
 
     let mut tray_wrapper = tray::TrayWrapper::new(&cfg, &devices, default_id, mute);
     update_tooltip(&tray_wrapper, &backend, &cfg);
+
+    #[cfg(windows)]
+    install_wheel_hook();
 
     let menu_rx = muda::MenuEvent::receiver();
     let tray_rx = tray_icon::TrayIconEvent::receiver();
@@ -160,28 +189,20 @@ fn main() {
                     // 中键也视为悬停，保持滚轮可用
                     IS_HOVER.store(true, Ordering::SeqCst);
                     wheel_state.clear();
-                    #[cfg(windows)]
-                    install_wheel_hook();
                 }
                 tray_icon::TrayIconEvent::Enter { .. }
                 | tray_icon::TrayIconEvent::Move { .. }
                 | tray_icon::TrayIconEvent::Click { .. } => {
                     IS_HOVER.store(true, Ordering::SeqCst);
                     wheel_state.clear();
-                    #[cfg(windows)]
-                    install_wheel_hook();
                 }
                 tray_icon::TrayIconEvent::Leave { .. } => {
                     IS_HOVER.store(false, Ordering::SeqCst);
                     wheel_state.clear();
-                    #[cfg(windows)]
-                    uninstall_wheel_hook();
                 }
                 tray_icon::TrayIconEvent::DoubleClick { .. } => {
                     IS_HOVER.store(true, Ordering::SeqCst);
                     wheel_state.clear();
-                    #[cfg(windows)]
-                    install_wheel_hook();
                 }
                 _ => {}
             }
@@ -396,7 +417,9 @@ fn main() {
 
         if WHEEL_PENDING.swap(false, Ordering::SeqCst) {
             let delta = WHEEL_DELTA.swap(0, Ordering::SeqCst);
-            if IS_HOVER.load(Ordering::SeqCst) && delta != 0 {
+            if (IS_HOVER.load(Ordering::SeqCst) || cursor_over_tray(&tray_wrapper))
+                && delta != 0
+            {
                 let now = Instant::now();
                 let step = wheel_state.push(now, cfg.wheel_acceleration, delta);
                 let total = tray::WheelState::total_step(delta, step);
