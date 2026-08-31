@@ -116,13 +116,6 @@ impl AppConfig {
         std::thread::spawn(move || cfg.save_to(&path))
     }
 
-    /// Legacy fire-and-forget wrapper (kept for compatibility).
-    #[allow(dead_code)]
-    pub fn save_fire_and_forget(&self) -> std::io::Result<()> {
-        let _ = self.save();
-        Ok(())
-    }
-
     /// Synchronous atomic save: write to unique tmp alongside target then rename.
     /// Unique suffix avoids concurrent `save()` callers racing on same `config.json.tmp`.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {

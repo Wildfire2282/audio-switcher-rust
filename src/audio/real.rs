@@ -474,15 +474,10 @@ impl RealBackend {
 }
 
 #[cfg(windows)]
-impl crate::audio::BackendWithSnapshot for RealBackend {
+impl AudioBackend for RealBackend {
     fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot {
-        // forward to inherent impl
         RealBackend::fetch_snapshot_clamped(self, cfg)
     }
-}
-
-#[cfg(windows)]
-impl AudioBackend for RealBackend {
     fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
         // optimized: single Activate, reuse cached_enumerator
         unsafe {
@@ -648,13 +643,6 @@ impl RealBackend {
         Ok((50, false))
     }
 }
-#[cfg(not(windows))]
-impl crate::audio::BackendWithSnapshot for RealBackend {
-    fn fetch_snapshot_clamped(&mut self, _cfg: &AppConfig) -> AudioSnapshot {
-        AudioSnapshot::default()
-    }
-}
-
 #[cfg(not(windows))]
 impl AudioBackend for RealBackend {
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {

@@ -30,16 +30,6 @@ pub struct WheelHook {
 }
 
 impl WheelHook {
-    /// Try to install hook on current thread (needs message pump).
-    #[allow(dead_code)]
-    pub fn try_install_if_needed() {
-        #[cfg(windows)]
-        {
-            if HOOK_HANDLE.load(Ordering::Relaxed) == 0 {
-                let _ = Self::install();
-            }
-        }
-    }
     pub fn install() -> Option<Self> {
         #[cfg(windows)]
         unsafe {

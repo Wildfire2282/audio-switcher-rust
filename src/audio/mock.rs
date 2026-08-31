@@ -114,14 +114,3 @@ impl AudioBackend for MockBackend {
         Ok(())
     }
 }
-
-impl super::BackendWithSnapshot for MockBackend {
-    fn fetch_snapshot_clamped(&mut self, _cfg: &AppConfig) -> super::AudioSnapshot {
-        super::AudioSnapshot {
-            devices: self.devices.clone(),
-            default_device: self.get_default_device(),
-            volume: self.volume,
-            mute: self.mute,
-        }
-    }
-}

@@ -18,8 +18,6 @@ pub struct App<B: AudioBackend = RealBackend> {
     last_hover: Instant,
     last_cursor_check: Instant,
     last_cursor_over: bool,
-    last_dark: bool,
-    last_theme_check: Instant,
     last_devices_rebuild: Instant,
     hook: Option<hook::WheelHook>,
     hook_install_at: Instant,
@@ -33,10 +31,7 @@ impl App<RealBackend> {
 }
 
 impl<B: AudioBackend> App<B> {
-    pub fn with_backend(com: crate::platform::ComGuard, mut backend: B) -> Self
-    where
-        B: crate::audio::BackendWithSnapshot,
-    {
+    pub fn with_backend(com: crate::platform::ComGuard, mut backend: B) -> Self {
         let cfg = AppConfig::load();
         let autostart = cfg.autostart;
         std::thread::spawn(move || {
@@ -59,8 +54,6 @@ impl<B: AudioBackend> App<B> {
             last_hover: Instant::now() - Duration::from_secs(10),
             last_cursor_check: Instant::now() - Duration::from_secs(1),
             last_cursor_over: false,
-            last_dark: crate::ui::is_dark_mode(),
-            last_theme_check: Instant::now(),
             last_devices_rebuild: Instant::now() - Duration::from_secs(1),
             hook: None,
             hook_install_at: Instant::now() + Duration::from_millis(180),
@@ -192,21 +185,6 @@ impl<B: AudioBackend> App<B> {
             self.hook = hook::WheelHook::install();
         }
     }
-    fn poll_theme(&mut self) {
-        if self.last_theme_check.elapsed() <= Duration::from_millis(1800) {
-            return;
-        }
-        self.last_theme_check = Instant::now();
-        let dark = crate::ui::is_dark_mode();
-        if dark != self.last_dark {
-            self.last_dark = dark;
-            #[cfg(windows)]
-            crate::ui::invalidate_dark_mode_cache();
-            if let Ok(m) = self.backend.get_mute() {
-                self.tray.update_icon(m);
-            }
-        }
-    }
     fn poll_tray(&mut self) {
         let tray_rx = tray_icon::TrayIconEvent::receiver();
         let Ok(event) = tray_rx.try_recv() else { return; };
@@ -288,13 +266,8 @@ impl<B: AudioBackend> App<B> {
         #[cfg(windows)]
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT};
-            let has_pending = hook::peek_pending();
-            if has_pending {
-                let _ = MsgWaitForMultipleObjectsEx(Some(&[]), 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-            } else {
-                let remaining = self.last_theme_check.checked_add(Duration::from_millis(1800)).and_then(|t| t.checked_duration_since(Instant::now())).map(|d| d.as_millis() as u32).unwrap_or(0).min(500);
-                let _ = MsgWaitForMultipleObjectsEx(Some(&[]), remaining.max(8), QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-            }
+            let timeout = if hook::peek_pending() { 8 } else { 500 };
+            let _ = MsgWaitForMultipleObjectsEx(Some(&[]), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         }
         #[cfg(not(windows))]
         std::thread::sleep(Duration::from_millis(if hook::peek_pending() { 8 } else { 24 }));
@@ -304,7 +277,6 @@ impl<B: AudioBackend> App<B> {
         loop {
             Self::pump_messages();
             self.maybe_install_hook();
-            self.poll_theme();
             self.poll_tray();
             self.poll_cursor();
             self.poll_menu();

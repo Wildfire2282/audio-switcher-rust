@@ -4,7 +4,6 @@ use crate::audio::AudioDevice;
 use crate::config::AppConfig;
 use crate::ui::icon::make_icon;
 use crate::ui::menu::{build_menu, MenuHandles};
-use crate::ui::theme::is_dark_mode;
 use crate::ui::tooltip::format_tooltip;
 
 pub struct TrayWrapper {
@@ -15,7 +14,7 @@ pub struct TrayWrapper {
 impl TrayWrapper {
     pub fn new(cfg: &AppConfig, devices: &[AudioDevice], default_id: Option<&str>, muted: bool) -> Self {
         let handles = build_menu(cfg, devices, default_id, muted);
-        let icon = make_icon(muted, is_dark_mode());
+        let icon = make_icon(muted);
         let tooltip = format_tooltip(
             default_id.and_then(|id| devices.iter().find(|d| d.id == id)),
             50,
@@ -37,7 +36,7 @@ impl TrayWrapper {
     }
 
     pub fn update_icon(&self, muted: bool) {
-        let icon = make_icon(muted, is_dark_mode());
+        let icon = make_icon(muted);
         let _ = self.tray.set_icon(Some(icon));
     }
 

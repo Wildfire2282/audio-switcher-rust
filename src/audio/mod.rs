@@ -13,17 +13,6 @@ pub enum AudioError {
     Failed(String),
 }
 
-impl AudioError {
-    #[allow(dead_code)]
-    pub fn com(hr: i32, msg: impl Into<String>) -> Self {
-        Self::Com { hr, msg: msg.into() }
-    }
-    #[allow(dead_code)]
-    pub fn com_msg(msg: impl Into<String>) -> Self {
-        Self::Com { hr: 0, msg: msg.into() }
-    }
-}
-
 impl std::fmt::Display for AudioError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -59,11 +48,14 @@ pub trait AudioBackend {
     fn poll_device_changed(&mut self) -> bool {
         false
     }
-}
-
-/// Extension for backends that can provide a clamped snapshot in one COM round-trip.
-pub trait BackendWithSnapshot: AudioBackend {
-    fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot;
+    /// Clamped snapshot in one round-trip; default builds from above methods.
+    fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot {
+        let devices = self.enumerate_devices().unwrap_or_default();
+        let default_device = self.get_default_device();
+        let (volume, mute) = self.get_volume_and_mute().unwrap_or((50, false));
+        let volume = crate::config::clamp_volume(volume, cfg);
+        AudioSnapshot { devices, default_device, volume, mute }
+    }
 }
 
 /// 快照：一次性获取枚举/默认/音量/静音，避免多次 CoCreateInstance
@@ -87,8 +79,7 @@ pub mod mock;
 pub use mock::MockBackend;
 
 pub mod real;
-#[allow(unused_imports)]
-pub use real::{take_device_changed, RealBackend};
+pub use real::RealBackend;
 
 #[cfg(test)]
 mod tests {
