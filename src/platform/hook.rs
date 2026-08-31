@@ -17,8 +17,9 @@ unsafe extern "system" fn hook_proc(
     if n_code >= 0 && w_param.0 as u32 == WM_MOUSEWHEEL {
         let info = &*(l_param.0 as *const MSLLHOOKSTRUCT);
         let delta = (info.mouseData >> 16) as u16 as i16 as i32;
-        WHEEL_DELTA.fetch_add(delta, Ordering::Relaxed);
-        WHEEL_PENDING.store(true, Ordering::Relaxed);
+        // SeqCst ensures visibility to `poll_wheel` even if OS dispatches hook on a different thread.
+        WHEEL_DELTA.fetch_add(delta, Ordering::SeqCst);
+        WHEEL_PENDING.store(true, Ordering::SeqCst);
     }
     CallNextHookEx(None, n_code, w_param, l_param)
 }
@@ -79,15 +80,15 @@ impl Drop for WheelHook {
 // ---- stateless helpers for App ----
 
 pub fn take_pending() -> bool {
-    WHEEL_PENDING.swap(false, Ordering::Relaxed)
+    WHEEL_PENDING.swap(false, Ordering::SeqCst)
 }
 
 pub fn peek_pending() -> bool {
-    WHEEL_PENDING.load(Ordering::Relaxed)
+    WHEEL_PENDING.load(Ordering::SeqCst)
 }
 
 pub fn take_delta() -> i32 {
-    WHEEL_DELTA.swap(0, Ordering::Relaxed)
+    WHEEL_DELTA.swap(0, Ordering::SeqCst)
 }
 
 #[cfg(windows)]
@@ -108,7 +109,9 @@ pub fn cursor_over_tray(wrapper: &crate::ui::tray::TrayWrapper) -> bool {
                 && y >= rect.position.y - pad
                 && y < rect.position.y + rect.size.height as f64 + pad
         } else {
-            true
+            // rect unavailable (overflow/undocked) — don't falsely claim hover;
+            // rely on IS_HOVER + 2.5s grace instead.
+            false
         }
     }
 }

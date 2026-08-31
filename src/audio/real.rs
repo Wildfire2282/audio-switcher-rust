@@ -140,6 +140,21 @@ static DEVICE_CHANGED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 static SUPPRESS_NOTIFY: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+struct SuppressGuard;
+#[cfg(windows)]
+impl SuppressGuard {
+    fn new() -> Self {
+        SUPPRESS_NOTIFY.store(true, AtomicOrdering::Relaxed);
+        Self
+    }
+}
+#[cfg(windows)]
+impl Drop for SuppressGuard {
+    fn drop(&mut self) {
+        SUPPRESS_NOTIFY.store(false, AtomicOrdering::Relaxed);
+    }
+}
 
 #[cfg(windows)]
 pub fn take_device_changed() -> bool {
@@ -190,6 +205,11 @@ impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for Notifier_Impl 
 }
 
 #[cfg(windows)]
+/// Holder for the COM notification client kept for process lifetime.
+/// `IMMNotificationClient` is STA (thread-affine) and not `Send/Sync`, but
+/// we only ever create/register it on the main STA thread and never access
+/// the inner pointer from another thread; `OnceLock` just extends lifetime.
+/// `Send/Sync` is therefore sound for this holder.
 struct NotifierHolder(#[allow(dead_code)] IMMNotificationClient);
 #[cfg(windows)]
 unsafe impl Send for NotifierHolder {}
@@ -314,11 +334,11 @@ impl RealBackend {
                     if cfg.volume_limit_enabled {
                         let clamped = clamp_volume(snap.volume, cfg);
                         if clamped != snap.volume {
-                            SUPPRESS_NOTIFY.store(true, AtomicOrdering::Relaxed);
+                            let _guard = SuppressGuard::new();
                             let v = clamped.min(100) as f32 / 100.0;
-                            let _ = vol.SetMasterVolumeLevelScalar(v, std::ptr::null());
-                            SUPPRESS_NOTIFY.store(false, AtomicOrdering::Relaxed);
-                            snap.volume = clamped;
+                            if vol.SetMasterVolumeLevelScalar(v, std::ptr::null()).is_ok() {
+                                snap.volume = clamped;
+                            }
                         }
                     }
                 }
@@ -584,14 +604,11 @@ impl AudioBackend for RealBackend {
         if !cfg.volume_limit_enabled {
             return Ok(());
         }
-        // 复用一次激活同时取音量，减少 CoCreateInstance
         let (vol, _) = self.get_volume_and_mute()?;
         let clamped = clamp_volume(vol, cfg);
         if clamped != vol {
-            SUPPRESS_NOTIFY.store(true, AtomicOrdering::Relaxed);
-            let r = self.set_volume(clamped);
-            SUPPRESS_NOTIFY.store(false, AtomicOrdering::Relaxed);
-            return r;
+            let _guard = SuppressGuard::new();
+            return self.set_volume(clamped);
         }
         Ok(())
     }

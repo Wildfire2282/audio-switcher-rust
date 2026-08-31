@@ -20,6 +20,7 @@ pub struct App<B: AudioBackend = RealBackend> {
     last_cursor_over: bool,
     last_dark: bool,
     last_theme_check: Instant,
+    last_devices_rebuild: Instant,
     hook: Option<hook::WheelHook>,
     hook_install_at: Instant,
     _com: crate::platform::ComGuard,
@@ -60,6 +61,7 @@ impl<B: AudioBackend> App<B> {
             last_cursor_over: false,
             last_dark: crate::ui::is_dark_mode(),
             last_theme_check: Instant::now(),
+            last_devices_rebuild: Instant::now() - Duration::from_secs(1),
             hook: None,
             hook_install_at: Instant::now() + Duration::from_millis(180),
             _com: com,
@@ -154,12 +156,12 @@ impl<B: AudioBackend> App<B> {
                     Err(_) => crate::platform::show_autostart_error(),
                 }
             }
-            MenuAction::LangZh | MenuAction::LangEn => {
-                self.cfg.lang = if matches!(handler::MenuAction::from_id(id), MenuAction::LangZh) {
-                    "zh".into()
-                } else {
-                    "en".into()
-                };
+            MenuAction::LangZh => {
+                self.cfg.lang = "zh".into();
+                self.save_and_refresh(false);
+            }
+            MenuAction::LangEn => {
+                self.cfg.lang = "en".into();
                 self.save_and_refresh(false);
             }
             MenuAction::About => {
@@ -269,10 +271,16 @@ impl<B: AudioBackend> App<B> {
         }
     }
     fn poll_devices(&mut self) {
-        if self.backend.poll_device_changed() || crate::audio::take_device_changed() {
-            let _ = self.backend.clamp_volume_if_needed(&self.cfg);
-            self.refresh_ui();
+        if !self.backend.poll_device_changed() {
+            return;
         }
+        // coalesce bursts: IMMNotificationClient may fire Added/Removed/DefaultChanged in quick succession.
+        if self.last_devices_rebuild.elapsed() < Duration::from_millis(120) {
+            return;
+        }
+        self.last_devices_rebuild = Instant::now();
+        let _ = self.backend.clamp_volume_if_needed(&self.cfg);
+        self.refresh_ui();
     }
     fn wait(&self) {
         #[cfg(windows)]

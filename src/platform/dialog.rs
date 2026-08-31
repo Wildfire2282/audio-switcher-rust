@@ -207,15 +207,19 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
         let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
         let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
         let class_name = w!("AudioSwitcherPrompt");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc),
-            hInstance: hinst2,
-            lpszClassName: class_name,
-            hbrBackground: HBRUSH(16 as *mut std::ffi::c_void),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
+        static CLASS_ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        CLASS_ONCE.get_or_init(|| {
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(wndproc),
+                hInstance: hinst2,
+                lpszClassName: class_name,
+                hbrBackground: HBRUSH(16 as *mut std::ffi::c_void),
+                hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+                ..Default::default()
+            };
+            RegisterClassW(&wc);
+            true
+        });
         let title = if lang == "zh" { w!("自定义音量上限") } else { w!("Custom Volume Limit") };
         let hwnd = match CreateWindowExW(
             WINDOW_EX_STYLE(0),

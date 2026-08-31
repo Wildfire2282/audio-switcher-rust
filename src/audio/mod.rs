@@ -87,6 +87,7 @@ pub mod mock;
 pub use mock::MockBackend;
 
 pub mod real;
+#[allow(unused_imports)]
 pub use real::{take_device_changed, RealBackend};
 
 #[cfg(test)]

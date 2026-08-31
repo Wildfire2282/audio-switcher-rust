@@ -123,17 +123,19 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Synchronous atomic save: write to tmp alongside target then rename.
-    /// Uses `file_name + ".tmp"` to stay on same filesystem; handles Windows
-    /// `rename` semantics (fails if dest exists) via remove-retry.
+    /// Synchronous atomic save: write to unique tmp alongside target then rename.
+    /// Unique suffix avoids concurrent `save()` callers racing on same `config.json.tmp`.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self).unwrap();
         let tmp_path = {
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "config.json".into());
-            path.with_file_name(format!("{}.tmp", file_name))
+            let suffix = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+            path.with_file_name(format!("{}.tmp.{}-{}", file_name, nanos, suffix))
         };
         std::fs::write(&tmp_path, json.as_bytes())?;
         if std::fs::rename(&tmp_path, path).is_ok() {
