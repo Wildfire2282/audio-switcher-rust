@@ -140,6 +140,7 @@ fn main() {
     let mut wheel_state = tray::WheelState::new();
     let mut last_dark = tray::is_dark_mode();
     let mut last_theme_check = Instant::now();
+    let mut last_hover_instant = Instant::now() - Duration::from_secs(10);
 
     loop {
         #[cfg(windows)]
@@ -188,12 +189,14 @@ fn main() {
                     }
                     // 中键也视为悬停，保持滚轮可用
                     IS_HOVER.store(true, Ordering::SeqCst);
+                    last_hover_instant = Instant::now();
                     wheel_state.clear();
                 }
                 tray_icon::TrayIconEvent::Enter { .. }
                 | tray_icon::TrayIconEvent::Move { .. }
                 | tray_icon::TrayIconEvent::Click { .. } => {
                     IS_HOVER.store(true, Ordering::SeqCst);
+                    last_hover_instant = Instant::now();
                     wheel_state.clear();
                 }
                 tray_icon::TrayIconEvent::Leave { .. } => {
@@ -202,9 +205,25 @@ fn main() {
                 }
                 tray_icon::TrayIconEvent::DoubleClick { .. } => {
                     IS_HOVER.store(true, Ordering::SeqCst);
+                    last_hover_instant = Instant::now();
                     wheel_state.clear();
                 }
                 _ => {}
+            }
+        }
+
+        // 轮询兜底：TrackPopupMenu 模态期间托盘的 Leave/Enter 可能丢失，
+        // 右键弹菜单后左键点击关闭，托盘往往仅收到 Click 而无 Enter，
+        // 此时 IS_HOVER 仍为 false 导致滚轮被丢弃。以后台矩形检测为准，
+        // 若光标仍在托盘图标矩形内则重建悬停态，无需移出重入。
+        #[cfg(windows)]
+        {
+            if cursor_over_tray(&tray_wrapper) {
+                if !IS_HOVER.load(Ordering::SeqCst) {
+                    IS_HOVER.store(true, Ordering::SeqCst);
+                    wheel_state.clear();
+                }
+                last_hover_instant = Instant::now();
             }
         }
 
@@ -417,7 +436,9 @@ fn main() {
 
         if WHEEL_PENDING.swap(false, Ordering::SeqCst) {
             let delta = WHEEL_DELTA.swap(0, Ordering::SeqCst);
-            if (IS_HOVER.load(Ordering::SeqCst) || cursor_over_tray(&tray_wrapper))
+            if (IS_HOVER.load(Ordering::SeqCst)
+                || last_hover_instant.elapsed() < Duration::from_millis(900)
+                || cursor_over_tray(&tray_wrapper))
                 && delta != 0
             {
                 let now = Instant::now();
