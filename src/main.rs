@@ -28,18 +28,12 @@ unsafe extern "system" fn hook_proc(
     w_param: windows::Win32::Foundation::WPARAM,
     l_param: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, WM_MOUSEWHEEL};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallNextHookEx, MOUSEHOOKSTRUCTEX, WM_MOUSEWHEEL,
+    };
     if n_code >= 0 && w_param.0 as u32 == WM_MOUSEWHEEL {
-        #[repr(C)]
-        struct MSLLHOOKSTRUCT {
-            pt: windows::Win32::Foundation::POINT,
-            mouse_data: u32,
-            flags: u32,
-            time: u32,
-            dw_extra: usize,
-        }
-        let info = &*(l_param.0 as *const MSLLHOOKSTRUCT);
-        let delta = (info.mouse_data >> 16) as u16 as i16 as i32;
+        let info = &*(l_param.0 as *const MOUSEHOOKSTRUCTEX);
+        let delta = (info.mouseData >> 16) as u16 as i16 as i32;
         WHEEL_DELTA.store(delta, Ordering::SeqCst);
         WHEEL_PENDING.store(true, Ordering::SeqCst);
     }
@@ -56,7 +50,7 @@ fn install_wheel_hook() {
         use windows::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_MOUSE_LL};
         let hinst = GetModuleHandleW(PCWSTR::null())
             .ok()
-            .map(|h| windows::Win32::Foundation::HINSTANCE(h.0 as *mut std::ffi::c_void));
+            .map(|h| windows::Win32::Foundation::HINSTANCE(h.0));
         if let Ok(hook) = SetWindowsHookExW(WH_MOUSE_LL, Some(hook_proc), hinst, 0) {
             HOOK_HANDLE.store(hook.0 as usize, Ordering::SeqCst);
         }
@@ -75,14 +69,13 @@ fn uninstall_wheel_hook() {
 }
 
 fn main() {
-    let _guard =
-        match system::SingleInstanceGuard::new("audio-switcher-rust-single-instance-v1") {
-            Some(g) => g,
-            None => return,
-        };
+    let _guard = match system::SingleInstanceGuard::new("audio-switcher-rust-single-instance-v1") {
+        Some(g) => g,
+        None => return,
+    };
 
     let mut cfg = AppConfig::load();
-    if cfg.autostart != system::is_autostart_enabled() && cfg.autostart {
+    if cfg.autostart && !system::is_autostart_enabled() {
         let _ = system::set_autostart(true);
     }
 
@@ -92,10 +85,15 @@ fn main() {
     unsafe {
         let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         if hr.is_err() {
-            use windows::Win32::UI::WindowsAndMessaging::{MB_ICONWARNING, MB_OK, MessageBoxW};
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
             let msg: Vec<u16> = "COM 初始化失败，程序将退出\0".encode_utf16().collect();
             let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
-            MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
+            MessageBoxW(
+                None,
+                PCWSTR(msg.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONWARNING,
+            );
             return;
         }
     }
@@ -126,7 +124,7 @@ fn main() {
             };
             let mut msg = MSG::default();
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                TranslateMessage(&msg);
+                let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
         }
@@ -173,9 +171,8 @@ fn main() {
 
         if let Ok(event) = menu_rx.try_recv() {
             let id = event.id.0.clone();
-            if id.starts_with("device_") {
-                let dev_id = id["device_".len()..].to_string();
-                match backend.set_default_device(&dev_id) {
+            if let Some(dev_id) = id.strip_prefix("device_") {
+                match backend.set_default_device(dev_id) {
                     Ok(()) => {
                         let _ = backend.clamp_volume_if_needed(&cfg);
                         tray::log_verbose(&cfg, &format!("switch to {}", dev_id));
@@ -189,13 +186,15 @@ fn main() {
                         #[cfg(windows)]
                         unsafe {
                             let msg = format!("切换设备失败: {}", e);
-                            let wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+                            let wide: Vec<u16> =
+                                msg.encode_utf16().chain(std::iter::once(0)).collect();
                             let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
                             windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
                                 None,
                                 PCWSTR(wide.as_ptr()),
                                 PCWSTR(title.as_ptr()),
-                                windows::Win32::UI::WindowsAndMessaging::MB_OK | windows::Win32::UI::WindowsAndMessaging::MB_ICONWARNING,
+                                windows::Win32::UI::WindowsAndMessaging::MB_OK
+                                    | windows::Win32::UI::WindowsAndMessaging::MB_ICONWARNING,
                             );
                         }
                     }
@@ -209,7 +208,11 @@ fn main() {
                             tray_wrapper.update_icon(new_mute);
                             update_tooltip(&tray_wrapper, &backend, &cfg);
                             let devs = backend.enumerate_devices().unwrap_or_default();
-                            tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                            tray_wrapper.rebuild_menu(
+                                &cfg,
+                                &devs,
+                                backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            );
                         }
                     }
                     "vol_enabled" => {
@@ -219,7 +222,11 @@ fn main() {
                             let _ = backend.clamp_volume_if_needed(&cfg);
                         }
                         let devs = backend.enumerate_devices().unwrap_or_default();
-                        tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                        tray_wrapper.rebuild_menu(
+                            &cfg,
+                            &devs,
+                            backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                        );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
                     "vol_25" => {
@@ -228,7 +235,12 @@ fn main() {
                         let _ = cfg.save();
                         let _ = backend.clamp_volume_if_needed(&cfg);
                         let devs = backend.enumerate_devices().unwrap_or_default();
-                        tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                        tray_wrapper.rebuild_menu(
+                            &cfg,
+                            &devs,
+                            backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                        );
+                        update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
                     "vol_50" => {
                         cfg.volume_limit = 50;
@@ -236,7 +248,12 @@ fn main() {
                         let _ = cfg.save();
                         let _ = backend.clamp_volume_if_needed(&cfg);
                         let devs = backend.enumerate_devices().unwrap_or_default();
-                        tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                        tray_wrapper.rebuild_menu(
+                            &cfg,
+                            &devs,
+                            backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                        );
+                        update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
                     "vol_custom" => {
                         if let Some(v) = tray::prompt_custom_limit(&cfg.lang) {
@@ -245,21 +262,34 @@ fn main() {
                             let _ = cfg.save();
                             let _ = backend.clamp_volume_if_needed(&cfg);
                             let devs = backend.enumerate_devices().unwrap_or_default();
-                            tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                            tray_wrapper.rebuild_menu(
+                                &cfg,
+                                &devs,
+                                backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                            );
+                            update_tooltip(&tray_wrapper, &backend, &cfg);
                         }
                     }
                     "wheel_accel" => {
                         cfg.wheel_acceleration = !cfg.wheel_acceleration;
                         let _ = cfg.save();
                         let devs = backend.enumerate_devices().unwrap_or_default();
-                        tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                        tray_wrapper.rebuild_menu(
+                            &cfg,
+                            &devs,
+                            backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                        );
                     }
                     "verbose_log" => {
                         cfg.verbose_log = !cfg.verbose_log;
                         let _ = cfg.save();
                         tray::log_verbose(&cfg, &format!("verbose_log -> {}", cfg.verbose_log));
                         let devs = backend.enumerate_devices().unwrap_or_default();
-                        tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                        tray_wrapper.rebuild_menu(
+                            &cfg,
+                            &devs,
+                            backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                        );
                     }
                     "open_mixer" => tray::open_volume_mixer(),
                     "open_sound" => tray::open_sound_settings(),
@@ -270,7 +300,11 @@ fn main() {
                                 cfg.autostart = new_val;
                                 let _ = cfg.save();
                                 let devs = backend.enumerate_devices().unwrap_or_default();
-                                tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                                tray_wrapper.rebuild_menu(
+                                    &cfg,
+                                    &devs,
+                                    backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                                );
                             }
                             Err(_) => system::show_autostart_error(),
                         }
@@ -279,14 +313,22 @@ fn main() {
                         cfg.lang = "zh".to_string();
                         let _ = cfg.save();
                         let devs = backend.enumerate_devices().unwrap_or_default();
-                        tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                        tray_wrapper.rebuild_menu(
+                            &cfg,
+                            &devs,
+                            backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                        );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
                     "lang_en" => {
                         cfg.lang = "en".to_string();
                         let _ = cfg.save();
                         let devs = backend.enumerate_devices().unwrap_or_default();
-                        tray_wrapper.rebuild_menu(&cfg, &devs, backend.get_default_device().as_ref().map(|d| d.id.as_str()));
+                        tray_wrapper.rebuild_menu(
+                            &cfg,
+                            &devs,
+                            backend.get_default_device().as_ref().map(|d| d.id.as_str()),
+                        );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
                     "help" => tray::show_help(&cfg.lang),
@@ -295,7 +337,9 @@ fn main() {
                         #[cfg(windows)]
                         uninstall_wheel_hook();
                         #[cfg(windows)]
-                        unsafe { CoUninitialize(); }
+                        unsafe {
+                            CoUninitialize();
+                        }
                         std::process::exit(0);
                     }
                     _ => {}
@@ -313,7 +357,12 @@ fn main() {
                     let new_vol = (vol as i32 + total).clamp(0, 100) as u32;
                     let clamped = config::clamp_volume(new_vol, &cfg);
                     let _ = backend.set_volume(clamped);
-                    tray::log_verbose(&cfg, &format!("wheel delta {delta} step {step} total {total} vol {vol}->{clamped}"));
+                    tray::log_verbose(
+                        &cfg,
+                        &format!(
+                            "wheel delta {delta} step {step} total {total} vol {vol}->{clamped}"
+                        ),
+                    );
                     update_tooltip(&tray_wrapper, &backend, &cfg);
                 }
             }

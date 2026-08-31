@@ -206,20 +206,12 @@ impl WheelState {
         }
         let count = self.history.len();
         // interval of last two ticks
-        let last_interval = if self.history.len() >= 2 {
-            let n = self.history.len();
-            self.history[n - 1].duration_since(self.history[n - 2])
+        let last_interval = if count >= 2 {
+            self.history[count - 1].duration_since(self.history[count - 2])
         } else {
             Duration::from_millis(200)
         };
-        let base_step = if count >= 5 || last_interval.as_millis() < 80 {
-            5
-        } else if count >= 3 {
-            2
-        } else {
-            1
-        };
-        base_step.min(5)
+        calc_wheel_step(count, last_interval.as_millis(), wheel_accel)
     }
 
     /// compute total delta percent for given delta (may be >120) and step
@@ -322,7 +314,7 @@ fn try_make_emoji_icon(muted: bool, is_dark: bool) -> Option<Icon> {
             ReleaseDC(Some(HWND(std::ptr::null_mut())), hdc_screen);
             return None;
         }
-        let mut bmi = BITMAPINFO {
+        let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: 32,
@@ -347,14 +339,14 @@ fn try_make_emoji_icon(muted: bool, is_dark: bool) -> Option<Icon> {
         let hbm = match CreateDIBSection(Some(hdc_mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
             Ok(h) => h,
             Err(_) => {
-                DeleteDC(hdc_mem);
+                let _ = DeleteDC(hdc_mem);
                 ReleaseDC(Some(HWND(std::ptr::null_mut())), hdc_screen);
                 return None;
             }
         };
         if bits.is_null() {
-            DeleteObject(hbm.into());
-            DeleteDC(hdc_mem);
+            let _ = DeleteObject(hbm.into());
+            let _ = DeleteDC(hdc_mem);
             ReleaseDC(Some(HWND(std::ptr::null_mut())), hdc_screen);
             return None;
         }
@@ -367,7 +359,7 @@ fn try_make_emoji_icon(muted: bool, is_dark: bool) -> Option<Icon> {
             bottom: 32,
         };
         windows::Win32::Graphics::Gdi::FillRect(hdc_mem, &rect, magenta);
-        DeleteObject(magenta.into());
+        let _ = DeleteObject(magenta.into());
         let face: Vec<u16> = "Segoe UI Emoji\0".encode_utf16().collect();
         let hfont = CreateFontW(
             -24,
@@ -407,7 +399,7 @@ fn try_make_emoji_icon(muted: bool, is_dark: bool) -> Option<Icon> {
         // restore
         if !hfont.0.is_null() {
             SelectObject(hdc_mem, old_font);
-            DeleteObject(hfont.into());
+            let _ = DeleteObject(hfont.into());
         }
         SelectObject(hdc_mem, old_bm);
         // convert BGRA bits to RGBA with magenta as transparent
@@ -437,8 +429,8 @@ fn try_make_emoji_icon(muted: bool, is_dark: bool) -> Option<Icon> {
                 // Approximate: if pixel is not pure magenta, keep opaque; simple but visible.
             }
         }
-        DeleteObject(hbm.into());
-        DeleteDC(hdc_mem);
+        let _ = DeleteObject(hbm.into());
+        let _ = DeleteDC(hdc_mem);
         ReleaseDC(Some(HWND(std::ptr::null_mut())), hdc_screen);
         Icon::from_rgba(rgba, 32, 32).ok()
     }
@@ -516,25 +508,6 @@ pub fn log_verbose(cfg: &AppConfig, msg: &str) {
 // menu building
 // ------------------------------------------------------------
 pub struct MenuHandles {
-    pub mute: CheckMenuItem,
-    pub volume_limit_submenu: Submenu,
-    pub volume_enabled: CheckMenuItem,
-    pub vol_25: CheckMenuItem,
-    pub vol_50: CheckMenuItem,
-    pub vol_custom: MenuItem,
-    pub experimental_submenu: Submenu,
-    pub wheel_accel: CheckMenuItem,
-    pub verbose_log: CheckMenuItem,
-    pub open_mixer: MenuItem,
-    pub open_sound: MenuItem,
-    pub autostart: CheckMenuItem,
-    pub lang_submenu: Submenu,
-    pub lang_zh: CheckMenuItem,
-    pub lang_en: CheckMenuItem,
-    pub help: MenuItem,
-    pub about: MenuItem,
-    pub exit: MenuItem,
-    pub device_items: Vec<(CheckMenuItem, String)>,
     pub menu: Menu,
 }
 
@@ -545,7 +518,6 @@ pub fn build_menu(
 ) -> MenuHandles {
     let lang = cfg.lang.as_str();
 
-    let mut device_items = Vec::new();
     let mut device_menu_items: Vec<CheckMenuItem> = Vec::new();
     for dev in devices {
         let checked = default_id == Some(dev.id.as_str());
@@ -556,7 +528,6 @@ pub fn build_menu(
             checked,
             None,
         );
-        device_items.push((item.clone(), dev.id.clone()));
         device_menu_items.push(item);
     }
 
@@ -668,28 +639,7 @@ pub fn build_menu(
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&exit);
 
-    MenuHandles {
-        mute,
-        volume_limit_submenu: vol_sub,
-        volume_enabled: vol_enabled,
-        vol_25,
-        vol_50,
-        vol_custom,
-        experimental_submenu: exp_sub,
-        wheel_accel: wheel,
-        verbose_log: verbose,
-        open_mixer,
-        open_sound,
-        autostart,
-        lang_submenu: lang_sub,
-        lang_zh,
-        lang_en,
-        help,
-        about,
-        exit,
-        device_items,
-        menu,
-    }
+    MenuHandles { menu }
 }
 
 // ------------------------------------------------------------
@@ -872,9 +822,8 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
         GetWindowTextW, IsWindow, LoadCursorW, PostQuitMessage, RegisterClassW, TranslateMessage,
-        BS_DEFPUSHBUTTON, ES_AUTOHSCROLL, HMENU, IDC_ARROW, MSG, WINDOW_EX_STYLE, WM_CLOSE,
-        WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
-        WS_EX_CLIENTEDGE, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+        IDC_ARROW, MSG, WINDOW_EX_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSW,
+        WS_CAPTION, WS_EX_CLIENTEDGE, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
     };
 
     static RESULT: Mutex<Option<Option<u32>>> = Mutex::new(None);
@@ -888,15 +837,13 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
         lparam: LPARAM,
     ) -> LRESULT {
         use windows::core::w;
-        use windows::Win32::Foundation::HWND as WinHWND;
         use windows::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW as CreateW, HMENU, WS_CHILD, WS_VISIBLE,
         };
         match msg {
             WM_CREATE => {
                 let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
-                let hinst2 =
-                    windows::Win32::Foundation::HINSTANCE(hinst.0 as *mut std::ffi::c_void);
+                let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
                 let is_zh = IS_ZH.load(Ordering::SeqCst);
                 let label_text = if is_zh {
                     w!("输入 1-100 整数:")
@@ -946,7 +893,7 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
                     70,
                     24,
                     Some(hwnd),
-                    Some(HMENU(1 as *mut std::ffi::c_void)),
+                    Some(HMENU(std::ptr::dangling_mut::<std::ffi::c_void>())),
                     Some(hinst2),
                     None,
                 );
@@ -973,19 +920,16 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
                     let mut buf = [0u16; 64];
                     let len = GetWindowTextW(edit_hwnd, &mut buf);
                     let s = String::from_utf16_lossy(&buf[..len as usize]);
-                    let parsed = s.trim().parse::<u32>();
-                    let valid = parsed
-                        .as_ref()
-                        .map(|v| (1..=100).contains(v))
-                        .unwrap_or(false);
-                    if valid {
-                        let mut lock = RESULT.lock();
-                        *lock = Some(parsed.ok());
-                        DONE.store(true, Ordering::SeqCst);
-                        let _ = DestroyWindow(hwnd);
-                    } else {
-                        let is_zh = IS_ZH.load(Ordering::SeqCst);
-                        show_error_invalid_custom(if is_zh { "zh" } else { "en" });
+                    match AppConfig::validate_custom_limit(&s) {
+                        Ok(v) => {
+                            *RESULT.lock() = Some(Some(v));
+                            DONE.store(true, Ordering::SeqCst);
+                            let _ = DestroyWindow(hwnd);
+                        }
+                        Err(_) => {
+                            let is_zh = IS_ZH.load(Ordering::SeqCst);
+                            show_error_invalid_custom(if is_zh { "zh" } else { "en" });
+                        }
                     }
                 } else if id == 2 {
                     let mut lock = RESULT.lock();
@@ -1018,7 +962,7 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
         IS_ZH.store(lang == "zh", Ordering::SeqCst);
         EDIT_HWND.store(0, Ordering::SeqCst);
         let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
-        let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0 as *mut std::ffi::c_void);
+        let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
         let class_name = w!("AudioSwitcherPrompt");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
@@ -1053,7 +997,7 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
         };
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            TranslateMessage(&msg);
+            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
             if DONE.load(Ordering::SeqCst) {
                 if IsWindow(Some(hwnd)).as_bool() {
@@ -1066,7 +1010,7 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
                 break;
             }
         }
-        let lock = RESULT.lock().clone();
+        let lock = *RESULT.lock();
         match lock {
             Some(Some(v)) if (1..=100).contains(&v) => Some(v),
             Some(Some(_)) => {
@@ -1147,9 +1091,11 @@ mod tests {
     }
     #[test]
     fn clamp_via_config() {
-        let mut cfg = AppConfig::default();
-        cfg.volume_limit_enabled = true;
-        cfg.volume_limit = 30;
+        let mut cfg = AppConfig {
+            volume_limit_enabled: true,
+            volume_limit: 30,
+            ..Default::default()
+        };
         use crate::config::clamp_volume;
         assert_eq!(clamp_volume(80, &cfg), 30);
         cfg.volume_limit_enabled = false;

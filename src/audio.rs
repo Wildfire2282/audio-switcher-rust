@@ -11,7 +11,6 @@ pub struct AudioDevice {
 #[derive(Debug, Clone)]
 pub enum AudioError {
     Com(String),
-    NotFound(String),
     Failed(String),
 }
 
@@ -19,7 +18,6 @@ impl std::fmt::Display for AudioError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AudioError::Com(s) => write!(f, "COM error: {}", s),
-            AudioError::NotFound(s) => write!(f, "not found: {}", s),
             AudioError::Failed(s) => write!(f, "failed: {}", s),
         }
     }
@@ -39,6 +37,7 @@ pub trait AudioBackend {
 // ------------------------------------------------------------
 // MockBackend for tests
 // ------------------------------------------------------------
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct MockBackend {
     pub devices: Vec<AudioDevice>,
@@ -51,6 +50,7 @@ pub struct MockBackend {
     cache_time: Option<Instant>,
 }
 
+#[cfg(test)]
 impl MockBackend {
     pub fn new(devices: Vec<AudioDevice>, default_id: Option<String>) -> Self {
         Self {
@@ -63,11 +63,6 @@ impl MockBackend {
             cached: None,
             cache_time: None,
         }
-    }
-
-    pub fn clear_cache(&mut self) {
-        self.cached = None;
-        self.cache_time = None;
     }
 
     fn maybe_fail(&mut self) -> Option<AudioError> {
@@ -87,6 +82,7 @@ impl MockBackend {
     }
 }
 
+#[cfg(test)]
 impl AudioBackend for MockBackend {
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
         if let Some(cached) = &self.cached {
@@ -122,7 +118,7 @@ impl AudioBackend for MockBackend {
             self.default_id = Some(id.to_string());
             Ok(())
         } else {
-            Err(AudioError::NotFound(id.to_string()))
+            Err(AudioError::Failed(format!("not found: {}", id)))
         }
     }
 
@@ -172,26 +168,120 @@ pub mod real {
     use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
     use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, STGM_READ};
     use windows::Win32::System::Variant::VT_LPWSTR;
-    const CLSID_POLICYCONFIGCLIENT: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2ea9);
-
     type SetDefaultEndpointFn =
         unsafe extern "system" fn(*mut std::ffi::c_void, PCWSTR, i32) -> HRESULT;
 
     unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core::Result<()> {
         use windows::core::IUnknown;
-        let enumerator: IUnknown = CoCreateInstance(&CLSID_POLICYCONFIGCLIENT, None, CLSCTX_ALL)?;
-        let vtbl = *(enumerator.as_raw() as *mut *mut *mut std::ffi::c_void);
-        let func_ptr: SetDefaultEndpointFn = std::mem::transmute(*vtbl.add(13));
+        // 多 CLSID/虚表偏移回退：不同 Windows 11 版本上
+        // 仅用单一 GUID/偏移会导致 0x80040154 或误调 SetEndpointVisibility
+        // 而呈现“不报错但不切换”。
+        // 以 audioswitch/IPolicyConfig.h 为准：
+        //   IPolicyConfig::SetDefaultEndpoint @ vtbl[13]
+        //   IPolicyConfigVista::SetDefaultEndpoint @ vtbl[12]
+        // 每个 CLSID 绑定其规范 IID 与主偏移，仅主偏移 S_OK 才算成功，
+        // 避免对 Vista 客户端先试 13 误调 SetEndpointVisibility 造成的假成功。
+        const IID_IPOLICYCONFIG: GUID = GUID::from_u128(0xf8679f50_850a_41cf_9c72_430f290290c8);
+        const IID_IPOLICYCONFIG_VISTA: GUID =
+            GUID::from_u128(0x568b9108_44bf_40b4_9006_86afe5b5a620);
+        const CANDIDATES: &[(GUID, GUID, usize)] = &[
+            (
+                GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9),
+                IID_IPOLICYCONFIG,
+                13,
+            ),
+            (
+                GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2ea9),
+                IID_IPOLICYCONFIG,
+                13,
+            ),
+            (
+                GUID::from_u128(0x294935ce_f637_4e7c_a41b_ab255460b862),
+                IID_IPOLICYCONFIG_VISTA,
+                12,
+            ),
+            (
+                GUID::from_u128(0x294935ce_f588_4bd5_9f8c_bab13166b487),
+                IID_IPOLICYCONFIG_VISTA,
+                12,
+            ),
+        ];
+        type QiFn = unsafe extern "system" fn(
+            *mut std::ffi::c_void,
+            *const GUID,
+            *mut *mut std::ffi::c_void,
+        ) -> HRESULT;
+        type ReleaseFn = unsafe extern "system" fn(*mut std::ffi::c_void) -> u32;
         let wide: Vec<u16> = device_id.encode_utf16().chain(std::iter::once(0)).collect();
-        let hr = func_ptr(
-            enumerator.as_raw() as *mut std::ffi::c_void,
-            PCWSTR(wide.as_ptr()),
-            role,
-        );
-        hr.ok()
+        let mut last_err: Option<windows::core::Error> = None;
+        for &(clsid, iid, primary_off) in CANDIDATES {
+            let instance: windows::core::Result<IUnknown> =
+                CoCreateInstance(&clsid, None, CLSCTX_ALL);
+            let Ok(unk) = instance else {
+                if let Err(e) = instance {
+                    last_err = Some(e);
+                }
+                continue;
+            };
+            // 1) 优先 QI 到规范 IID 后在该接口指针上调用主偏移
+            let raw_unk = unk.as_raw();
+            let vtbl_unk = unsafe { *(raw_unk as *mut *mut *mut std::ffi::c_void) };
+            if !vtbl_unk.is_null() {
+                let qi: QiFn = unsafe { std::mem::transmute(*vtbl_unk) };
+                let mut iface: *mut std::ffi::c_void = std::ptr::null_mut();
+                let hr_qi = unsafe { qi(raw_unk, &iid as *const GUID, &mut iface) };
+                if hr_qi.is_ok() && !iface.is_null() {
+                    let vtbl_iface = unsafe { *(iface as *mut *mut *mut std::ffi::c_void) };
+                    if !vtbl_iface.is_null() {
+                        let func: SetDefaultEndpointFn =
+                            unsafe { std::mem::transmute(*vtbl_iface.add(primary_off)) };
+                        let hr = unsafe { func(iface, PCWSTR(wide.as_ptr()), role) };
+                        // Release iface
+                        let rel: ReleaseFn =
+                            unsafe { std::mem::transmute(*vtbl_iface.add(2)) };
+                        unsafe { rel(iface) };
+                        if hr.is_ok() {
+                            return Ok(());
+                        }
+                        last_err = Some(windows::core::Error::from(hr));
+                        // Vista 上若主偏移失败，不再对该 CLSID 试另一偏移，
+                        // 避免误调另一个方法产生假 S_OK；直接试下一 CLSID。
+                        continue;
+                    }
+                    // QI 成功但 vtbl 空，兜底 Release
+                    let vtbl_iface = unsafe { *(iface as *mut *mut *mut std::ffi::c_void) };
+                    if !vtbl_iface.is_null() {
+                        let rel: ReleaseFn =
+                            unsafe { std::mem::transmute(*vtbl_iface.add(2)) };
+                        unsafe { rel(iface) };
+                    }
+                }
+            }
+            // 2) QI 失败或环境不支持 QI，回退到直接在 IUnknown 裸指针上按主偏移调用
+            //    （多数系统上具体类直接实现接口，裸调同样有效）
+            let vtbl = unsafe { *(raw_unk as *mut *mut *mut std::ffi::c_void) };
+            if vtbl.is_null() {
+                last_err = Some(windows::core::Error::from_hresult(windows::core::HRESULT(
+                    0x80004005u32 as i32,
+                )));
+                continue;
+            }
+            let func: SetDefaultEndpointFn =
+                unsafe { std::mem::transmute(*vtbl.add(primary_off)) };
+            let hr = unsafe { func(raw_unk, PCWSTR(wide.as_ptr()), role) };
+            if hr.is_ok() {
+                return Ok(());
+            }
+            last_err = Some(windows::core::Error::from(hr));
+        }
+        Err(last_err.unwrap_or(windows::core::Error::from_hresult(
+            windows::core::HRESULT(0x80040154u32 as i32),
+        )))
     }
 
     static DEVICE_CHANGED: AtomicBool = AtomicBool::new(false);
+
+    static SUPPRESS_NOTIFY: AtomicBool = AtomicBool::new(false);
 
     pub fn take_device_changed() -> bool {
         DEVICE_CHANGED.swap(false, Ordering::SeqCst)
@@ -231,6 +321,9 @@ pub mod real {
             _device_id: &PCWSTR,
             _key: &windows::Win32::Foundation::PROPERTYKEY,
         ) -> windows::core::Result<()> {
+            if SUPPRESS_NOTIFY.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             DEVICE_CHANGED.store(true, Ordering::SeqCst);
             Ok(())
         }
@@ -252,23 +345,18 @@ pub mod real {
     pub struct RealBackend {
         cached: Option<Vec<AudioDevice>>,
         cache_time: Option<Instant>,
-        suppress_notify: bool,
-        _registered: bool,
     }
 
     impl RealBackend {
         pub fn new() -> Self {
-            let mut s = Self {
+            let s = Self {
                 cached: None,
                 cache_time: None,
-                suppress_notify: false,
-                _registered: false,
             };
             // register once per process
             static REGISTERED: AtomicBool = AtomicBool::new(false);
             if !REGISTERED.swap(true, Ordering::SeqCst) {
                 register_notification_client();
-                s._registered = true;
             }
             s
         }
@@ -405,9 +493,8 @@ pub mod real {
 
         fn set_default_device(&mut self, id: &str) -> Result<(), AudioError> {
             unsafe {
-                let hr = set_default_endpoint_raw(id, eMultimedia.0 as i32);
+                let hr = set_default_endpoint_raw(id, eMultimedia.0);
                 if let Err(e) = hr {
-                    Self::show_msgbox(&format!("切换设备失败: {}", e));
                     return Err(AudioError::Failed(e.to_string()));
                 }
                 let _ = set_default_endpoint_raw(id, 0);
@@ -503,9 +590,9 @@ pub mod real {
             let vol = self.get_volume()?;
             let clamped = clamp_volume(vol, cfg);
             if clamped != vol {
-                self.suppress_notify = true;
+                SUPPRESS_NOTIFY.store(true, Ordering::SeqCst);
                 let r = self.set_volume(clamped);
-                self.suppress_notify = false;
+                SUPPRESS_NOTIFY.store(false, Ordering::SeqCst);
                 return r;
             }
             Ok(())
@@ -609,9 +696,11 @@ mod tests {
 
     #[test]
     fn clamp_via_backend() {
-        let mut cfg = AppConfig::default();
-        cfg.volume_limit = 25;
-        cfg.volume_limit_enabled = true;
+        let cfg = AppConfig {
+            volume_limit: 25,
+            volume_limit_enabled: true,
+            ..Default::default()
+        };
         let mut m = MockBackend::new(vec![], None);
         m.volume = 80;
         m.clamp_volume_if_needed(&cfg).unwrap();

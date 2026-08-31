@@ -58,10 +58,6 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
-    pub fn is_zh(&self) -> bool {
-        self.lang == "zh"
-    }
-
     pub fn config_path() -> PathBuf {
         if let Ok(appdata) = std::env::var("APPDATA") {
             PathBuf::from(appdata)
@@ -78,6 +74,7 @@ impl AppConfig {
         }
     }
 
+    #[cfg(test)]
     pub fn config_path_for(dir: &Path) -> PathBuf {
         dir.join("config.json")
     }
@@ -172,17 +169,21 @@ mod tests {
 
     #[test]
     fn clamp_enabled() {
-        let mut cfg = AppConfig::default();
-        cfg.volume_limit_enabled = true;
-        cfg.volume_limit = 25;
+        let cfg = AppConfig {
+            volume_limit_enabled: true,
+            volume_limit: 25,
+            ..Default::default()
+        };
         assert_eq!(clamp_volume(30, &cfg), 25);
         assert_eq!(clamp_volume(20, &cfg), 20);
     }
 
     #[test]
     fn clamp_disabled() {
-        let mut cfg = AppConfig::default();
-        cfg.volume_limit_enabled = false;
+        let cfg = AppConfig {
+            volume_limit_enabled: false,
+            ..Default::default()
+        };
         assert_eq!(clamp_volume(80, &cfg), 80);
     }
 
