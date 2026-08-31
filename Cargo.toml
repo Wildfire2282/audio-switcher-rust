@@ -1,0 +1,51 @@
+[package]
+name = "audio-switcher"
+version = "0.1.0"
+edition = "2021"
+description = "Audio Switcher tray tool"
+authors = []
+license = "MIT"
+
+[dependencies]
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
+  "Win32_Devices_FunctionDiscovery",
+  "Win32_System_Threading",
+  "Win32_System_SystemServices",
+  "Win32_System_Registry",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_Controls",
+  "Win32_System_LibraryLoader",
+  "Win32_System_SystemInformation",
+] }
+tray-icon = "0.24.2"
+muda = "0.19.3"
+auto-launch = "0.6.0"
+single-instance = "0.3.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+parking_lot = "0.12"
+windows-core = "0.62"
+[dev-dependencies]
+tempfile = "3.10"
+
+[build-dependencies]
+embed-manifest = "1.4"
+
+[[bin]]
+name = "audio-switcher"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+strip = true
+panic = "abort"

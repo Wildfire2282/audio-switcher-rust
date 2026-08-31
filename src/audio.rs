@@ -1,0 +1,650 @@
+use std::time::{Duration, Instant};
+
+use crate::config::{clamp_volume, AppConfig};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioDevice {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum AudioError {
+    Com(String),
+    NotFound(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for AudioError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AudioError::Com(s) => write!(f, "COM error: {}", s),
+            AudioError::NotFound(s) => write!(f, "not found: {}", s),
+            AudioError::Failed(s) => write!(f, "failed: {}", s),
+        }
+    }
+}
+
+pub trait AudioBackend {
+    fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError>;
+    fn get_default_device(&self) -> Option<AudioDevice>;
+    fn set_default_device(&mut self, id: &str) -> Result<(), AudioError>;
+    fn get_volume(&self) -> Result<u32, AudioError>;
+    fn set_volume(&mut self, volume: u32) -> Result<(), AudioError>;
+    fn get_mute(&self) -> Result<bool, AudioError>;
+    fn set_mute(&mut self, mute: bool) -> Result<(), AudioError>;
+    fn clamp_volume_if_needed(&mut self, cfg: &AppConfig) -> Result<(), AudioError>;
+}
+
+// ------------------------------------------------------------
+// MockBackend for tests
+// ------------------------------------------------------------
+#[derive(Debug, Clone)]
+pub struct MockBackend {
+    pub devices: Vec<AudioDevice>,
+    pub default_id: Option<String>,
+    pub volume: u32,
+    pub mute: bool,
+    pub fail_next: bool,
+    pub enumerate_count: usize,
+    cached: Option<Vec<AudioDevice>>,
+    cache_time: Option<Instant>,
+}
+
+impl MockBackend {
+    pub fn new(devices: Vec<AudioDevice>, default_id: Option<String>) -> Self {
+        Self {
+            devices,
+            default_id,
+            volume: 50,
+            mute: false,
+            fail_next: false,
+            enumerate_count: 0,
+            cached: None,
+            cache_time: None,
+        }
+    }
+
+    pub fn clear_cache(&mut self) {
+        self.cached = None;
+        self.cache_time = None;
+    }
+
+    fn maybe_fail(&mut self) -> Option<AudioError> {
+        if self.fail_next {
+            self.fail_next = false;
+            return Some(AudioError::Failed("mock failure".into()));
+        }
+        None
+    }
+
+    pub fn set_volume_impl(&mut self, volume: u32) -> Result<(), AudioError> {
+        if let Some(e) = self.maybe_fail() {
+            return Err(e);
+        }
+        self.volume = volume.min(100);
+        Ok(())
+    }
+}
+
+impl AudioBackend for MockBackend {
+    fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
+        if let Some(cached) = &self.cached {
+            if let Some(t) = &self.cache_time {
+                if t.elapsed() < Duration::from_millis(800) {
+                    return Ok(cached.clone());
+                }
+            }
+        }
+        if self.devices.is_empty() {
+            if let Some(c) = &self.cached {
+                return Ok(c.clone());
+            }
+            return Ok(vec![]);
+        }
+        self.enumerate_count += 1;
+        let v = self.devices.clone();
+        self.cached = Some(v.clone());
+        self.cache_time = Some(Instant::now());
+        Ok(v)
+    }
+
+    fn get_default_device(&self) -> Option<AudioDevice> {
+        let id = self.default_id.as_ref()?;
+        self.devices.iter().find(|d| &d.id == id).cloned()
+    }
+
+    fn set_default_device(&mut self, id: &str) -> Result<(), AudioError> {
+        if let Some(e) = self.maybe_fail() {
+            return Err(e);
+        }
+        if self.devices.iter().any(|d| d.id == id) {
+            self.default_id = Some(id.to_string());
+            Ok(())
+        } else {
+            Err(AudioError::NotFound(id.to_string()))
+        }
+    }
+
+    fn get_volume(&self) -> Result<u32, AudioError> {
+        Ok(self.volume)
+    }
+
+    fn set_volume(&mut self, volume: u32) -> Result<(), AudioError> {
+        self.set_volume_impl(volume)
+    }
+
+    fn get_mute(&self) -> Result<bool, AudioError> {
+        Ok(self.mute)
+    }
+
+    fn set_mute(&mut self, mute: bool) -> Result<(), AudioError> {
+        if let Some(e) = self.maybe_fail() {
+            return Err(e);
+        }
+        self.mute = mute;
+        Ok(())
+    }
+
+    fn clamp_volume_if_needed(&mut self, cfg: &AppConfig) -> Result<(), AudioError> {
+        let clamped = clamp_volume(self.volume, cfg);
+        if clamped != self.volume {
+            self.volume = clamped;
+        }
+        Ok(())
+    }
+}
+
+// ------------------------------------------------------------
+// RealBackend (Windows only)
+// ------------------------------------------------------------
+#[cfg(windows)]
+pub mod real {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows::core::{Interface, GUID, HRESULT, PCWSTR};
+    use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{
+        eMultimedia, eRender, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
+        IMMNotificationClient, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    };
+    use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
+    use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, STGM_READ};
+    use windows::Win32::System::Variant::VT_LPWSTR;
+    const CLSID_POLICYCONFIGCLIENT: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2ea9);
+
+    type SetDefaultEndpointFn =
+        unsafe extern "system" fn(*mut std::ffi::c_void, PCWSTR, i32) -> HRESULT;
+
+    unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core::Result<()> {
+        use windows::core::IUnknown;
+        let enumerator: IUnknown = CoCreateInstance(&CLSID_POLICYCONFIGCLIENT, None, CLSCTX_ALL)?;
+        let vtbl = *(enumerator.as_raw() as *mut *mut *mut std::ffi::c_void);
+        let func_ptr: SetDefaultEndpointFn = std::mem::transmute(*vtbl.add(13));
+        let wide: Vec<u16> = device_id.encode_utf16().chain(std::iter::once(0)).collect();
+        let hr = func_ptr(
+            enumerator.as_raw() as *mut std::ffi::c_void,
+            PCWSTR(wide.as_ptr()),
+            role,
+        );
+        hr.ok()
+    }
+
+    static DEVICE_CHANGED: AtomicBool = AtomicBool::new(false);
+
+    pub fn take_device_changed() -> bool {
+        DEVICE_CHANGED.swap(false, Ordering::SeqCst)
+    }
+
+    #[windows_core::implement(windows::Win32::Media::Audio::IMMNotificationClient)]
+    struct Notifier;
+
+    impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for Notifier_Impl {
+        fn OnDeviceStateChanged(
+            &self,
+            _device_id: &PCWSTR,
+            _new_state: windows::Win32::Media::Audio::DEVICE_STATE,
+        ) -> windows::core::Result<()> {
+            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        fn OnDeviceAdded(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
+            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        fn OnDeviceRemoved(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
+            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        fn OnDefaultDeviceChanged(
+            &self,
+            _flow: windows::Win32::Media::Audio::EDataFlow,
+            _role: windows::Win32::Media::Audio::ERole,
+            _device_id: &PCWSTR,
+        ) -> windows::core::Result<()> {
+            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        fn OnPropertyValueChanged(
+            &self,
+            _device_id: &PCWSTR,
+            _key: &windows::Win32::Foundation::PROPERTYKEY,
+        ) -> windows::core::Result<()> {
+            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn register_notification_client() {
+        unsafe {
+            if let Ok(enumerator) =
+                CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            {
+                let notifier: IMMNotificationClient = Notifier.into();
+                let _ = enumerator.RegisterEndpointNotificationCallback(&notifier);
+                // leak to keep alive for process lifetime
+                std::mem::forget(notifier);
+            }
+        }
+    }
+
+    pub struct RealBackend {
+        cached: Option<Vec<AudioDevice>>,
+        cache_time: Option<Instant>,
+        suppress_notify: bool,
+        _registered: bool,
+    }
+
+    impl RealBackend {
+        pub fn new() -> Self {
+            let mut s = Self {
+                cached: None,
+                cache_time: None,
+                suppress_notify: false,
+                _registered: false,
+            };
+            // register once per process
+            static REGISTERED: AtomicBool = AtomicBool::new(false);
+            if !REGISTERED.swap(true, Ordering::SeqCst) {
+                register_notification_client();
+                s._registered = true;
+            }
+            s
+        }
+
+        pub fn clear_cache(&mut self) {
+            self.cached = None;
+            self.cache_time = None;
+        }
+
+        pub fn poll_device_changed(&mut self) -> bool {
+            if take_device_changed() {
+                self.clear_cache();
+                return true;
+            }
+            false
+        }
+
+        fn get_enumerator() -> windows::core::Result<IMMDeviceEnumerator> {
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+        }
+
+        fn device_id(device: &IMMDevice) -> windows::core::Result<String> {
+            unsafe {
+                let pw = device.GetId()?;
+                let s = pw.to_string().unwrap_or_default();
+                CoTaskMemFree(Some(pw.0 as *const std::ffi::c_void));
+                Ok(s)
+            }
+        }
+
+        fn device_friendly_name(device: &IMMDevice) -> String {
+            unsafe {
+                if let Ok(store) = device.OpenPropertyStore(STGM_READ) {
+                    if let Ok(mut pv) = store.GetValue(&PKEY_Device_FriendlyName) {
+                        let vt = pv.Anonymous.Anonymous.vt;
+                        let s = if vt == VT_LPWSTR {
+                            let pw = pv.Anonymous.Anonymous.Anonymous.pwszVal;
+                            if !pw.0.is_null() {
+                                pw.to_string().unwrap_or_default()
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        };
+                        let _ = PropVariantClear(&mut pv as *mut _);
+                        if !s.is_empty() {
+                            return s.chars().take(80).collect();
+                        }
+                    }
+                }
+                // Fallback to ID short
+                if let Ok(id) = Self::device_id(device) {
+                    let short = id.split('\\').next_back().unwrap_or(&id);
+                    let truncated: String = short.chars().take(40).collect();
+                    if !truncated.is_empty() {
+                        return truncated;
+                    }
+                    return id.chars().take(40).collect();
+                }
+                "Unknown".to_string()
+            }
+        }
+
+        fn show_msgbox(msg: &str) {
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
+                let wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+                let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
+                MessageBoxW(
+                    None,
+                    PCWSTR(wide.as_ptr()),
+                    PCWSTR(title.as_ptr()),
+                    MB_OK | MB_ICONWARNING,
+                );
+            }
+        }
+    }
+
+    impl AudioBackend for RealBackend {
+        fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
+            // if notification flagged, cache already cleared via poll, but also handle here
+            if take_device_changed() {
+                self.clear_cache();
+            }
+            if let Some(cached) = &self.cached {
+                if let Some(t) = &self.cache_time {
+                    if t.elapsed() < Duration::from_millis(800) {
+                        return Ok(cached.clone());
+                    }
+                }
+            }
+            unsafe {
+                let enumerator =
+                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
+                let collection: IMMDeviceCollection = enumerator
+                    .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let count = collection
+                    .GetCount()
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let mut devices = Vec::new();
+                for i in 0..count {
+                    if let Ok(dev) = collection.Item(i) {
+                        if let Ok(id) = Self::device_id(&dev) {
+                            let name = Self::device_friendly_name(&dev);
+                            devices.push(AudioDevice { id, name });
+                        }
+                    }
+                }
+                if devices.is_empty() {
+                    if let Some(c) = &self.cached {
+                        return Ok(c.clone());
+                    }
+                    return Ok(vec![]);
+                }
+                self.cached = Some(devices.clone());
+                self.cache_time = Some(Instant::now());
+                Ok(devices)
+            }
+        }
+
+        fn get_default_device(&self) -> Option<AudioDevice> {
+            unsafe {
+                let enumerator = Self::get_enumerator().ok()?;
+                let dev = enumerator
+                    .GetDefaultAudioEndpoint(eRender, eMultimedia)
+                    .ok()?;
+                let id = Self::device_id(&dev).ok()?;
+                let name = Self::device_friendly_name(&dev);
+                Some(AudioDevice { id, name })
+            }
+        }
+
+        fn set_default_device(&mut self, id: &str) -> Result<(), AudioError> {
+            unsafe {
+                let hr = set_default_endpoint_raw(id, eMultimedia.0 as i32);
+                if let Err(e) = hr {
+                    Self::show_msgbox(&format!("切换设备失败: {}", e));
+                    return Err(AudioError::Failed(e.to_string()));
+                }
+                let _ = set_default_endpoint_raw(id, 0);
+                let _ = set_default_endpoint_raw(id, 2);
+                self.clear_cache();
+                Ok(())
+            }
+        }
+
+        fn get_volume(&self) -> Result<u32, AudioError> {
+            unsafe {
+                let enumerator =
+                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
+                let dev = enumerator
+                    .GetDefaultAudioEndpoint(eRender, eMultimedia)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let vol: IAudioEndpointVolume = dev
+                    .Activate(CLSCTX_ALL, None)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let scalar = vol
+                    .GetMasterVolumeLevelScalar()
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                Ok((scalar * 100.0).round() as u32)
+            }
+        }
+
+        fn set_volume(&mut self, volume: u32) -> Result<(), AudioError> {
+            let v = volume.min(100) as f32 / 100.0;
+            unsafe {
+                let enumerator =
+                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
+                let dev = enumerator
+                    .GetDefaultAudioEndpoint(eRender, eMultimedia)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let vol: IAudioEndpointVolume = dev
+                    .Activate(CLSCTX_ALL, None)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let mut last_err: Option<windows::core::Error> = None;
+                for _ in 0..2 {
+                    match vol.SetMasterVolumeLevelScalar(v, std::ptr::null()) {
+                        Ok(()) => return Ok(()),
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+                if let Some(e) = last_err {
+                    Self::show_msgbox(&format!("设置音量失败: {}", e));
+                    return Err(AudioError::Failed(e.to_string()));
+                }
+                Ok(())
+            }
+        }
+
+        fn get_mute(&self) -> Result<bool, AudioError> {
+            unsafe {
+                let enumerator =
+                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
+                let dev = enumerator
+                    .GetDefaultAudioEndpoint(eRender, eMultimedia)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let vol: IAudioEndpointVolume = dev
+                    .Activate(CLSCTX_ALL, None)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let m = vol.GetMute().map_err(|e| AudioError::Com(e.to_string()))?;
+                Ok(m.as_bool())
+            }
+        }
+
+        fn set_mute(&mut self, mute: bool) -> Result<(), AudioError> {
+            unsafe {
+                let enumerator =
+                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
+                let dev = enumerator
+                    .GetDefaultAudioEndpoint(eRender, eMultimedia)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let vol: IAudioEndpointVolume = dev
+                    .Activate(CLSCTX_ALL, None)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                for _ in 0..2 {
+                    match vol.SetMute(mute, std::ptr::null()) {
+                        Ok(()) => return Ok(()),
+                        Err(_) => continue,
+                    }
+                }
+                Self::show_msgbox("切换静音失败");
+                Err(AudioError::Failed("set mute failed".into()))
+            }
+        }
+
+        fn clamp_volume_if_needed(&mut self, cfg: &AppConfig) -> Result<(), AudioError> {
+            if !cfg.volume_limit_enabled {
+                return Ok(());
+            }
+            let vol = self.get_volume()?;
+            let clamped = clamp_volume(vol, cfg);
+            if clamped != vol {
+                self.suppress_notify = true;
+                let r = self.set_volume(clamped);
+                self.suppress_notify = false;
+                return r;
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub mod real {
+    use super::*;
+    pub struct RealBackend {
+        cached: Option<Vec<AudioDevice>>,
+        cache_time: Option<Instant>,
+    }
+    impl RealBackend {
+        pub fn new() -> Self {
+            Self {
+                cached: None,
+                cache_time: None,
+            }
+        }
+        pub fn clear_cache(&mut self) {
+            self.cached = None;
+            self.cache_time = None;
+        }
+        pub fn poll_device_changed(&mut self) -> bool {
+            false
+        }
+    }
+    impl AudioBackend for RealBackend {
+        fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
+            Ok(vec![])
+        }
+        fn get_default_device(&self) -> Option<AudioDevice> {
+            None
+        }
+        fn set_default_device(&mut self, _id: &str) -> Result<(), AudioError> {
+            Ok(())
+        }
+        fn get_volume(&self) -> Result<u32, AudioError> {
+            Ok(50)
+        }
+        fn set_volume(&mut self, _volume: u32) -> Result<(), AudioError> {
+            Ok(())
+        }
+        fn get_mute(&self) -> Result<bool, AudioError> {
+            Ok(false)
+        }
+        fn set_mute(&mut self, _mute: bool) -> Result<(), AudioError> {
+            Ok(())
+        }
+        fn clamp_volume_if_needed(&mut self, _cfg: &AppConfig) -> Result<(), AudioError> {
+            Ok(())
+        }
+    }
+    pub fn take_device_changed() -> bool {
+        false
+    }
+}
+
+pub use real::{take_device_changed, RealBackend};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_enumerate_cache() {
+        let devs = vec![AudioDevice {
+            id: "a".into(),
+            name: "Speaker".into(),
+        }];
+        let mut m = MockBackend::new(devs.clone(), Some("a".into()));
+        let first = m.enumerate_devices().unwrap();
+        assert_eq!(first.len(), 1);
+        let count_before = m.enumerate_count;
+        let second = m.enumerate_devices().unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(
+            m.enumerate_count, count_before,
+            "should hit cache within 800ms"
+        );
+        std::thread::sleep(Duration::from_millis(850));
+        let _third = m.enumerate_devices().unwrap();
+        assert_eq!(m.enumerate_count, count_before + 1);
+    }
+
+    #[test]
+    fn mock_empty_keeps_current() {
+        let devs = vec![AudioDevice {
+            id: "a".into(),
+            name: "Sp".into(),
+        }];
+        let mut m = MockBackend::new(devs.clone(), Some("a".into()));
+        let _ = m.enumerate_devices().unwrap();
+        m.devices = vec![];
+        std::thread::sleep(Duration::from_millis(850));
+        let after = m.enumerate_devices().unwrap();
+        assert_eq!(after.len(), 1);
+    }
+
+    #[test]
+    fn clamp_via_backend() {
+        let mut cfg = AppConfig::default();
+        cfg.volume_limit = 25;
+        cfg.volume_limit_enabled = true;
+        let mut m = MockBackend::new(vec![], None);
+        m.volume = 80;
+        m.clamp_volume_if_needed(&cfg).unwrap();
+        assert_eq!(m.volume, 25);
+    }
+
+    #[test]
+    fn set_default_device_mock() {
+        let devs = vec![
+            AudioDevice {
+                id: "a".into(),
+                name: "A".into(),
+            },
+            AudioDevice {
+                id: "b".into(),
+                name: "B".into(),
+            },
+        ];
+        let mut m = MockBackend::new(devs, Some("a".into()));
+        m.set_default_device("b").unwrap();
+        assert_eq!(m.default_id.as_deref(), Some("b"));
+        assert!(m.set_default_device("c").is_err());
+    }
+
+    #[test]
+    #[ignore]
+    fn integration_real_mock() {
+        let devs = vec![AudioDevice {
+            id: "x".into(),
+            name: "X".into(),
+        }];
+        let mut backend: Box<dyn AudioBackend> = Box::new(MockBackend::new(devs, None));
+        let list = backend.enumerate_devices().unwrap();
+        assert_eq!(list.len(), 1);
+    }
+}
