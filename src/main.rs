@@ -157,8 +157,15 @@ fn main() {
                         );
                         tray::log_verbose(&cfg, &format!("middle mute toggle -> {}", new_mute));
                     }
+                    // 中键也视为悬停，保持滚轮可用
+                    IS_HOVER.store(true, Ordering::SeqCst);
+                    wheel_state.clear();
+                    #[cfg(windows)]
+                    install_wheel_hook();
                 }
-                tray_icon::TrayIconEvent::Enter { .. } => {
+                tray_icon::TrayIconEvent::Enter { .. }
+                | tray_icon::TrayIconEvent::Move { .. }
+                | tray_icon::TrayIconEvent::Click { .. } => {
                     IS_HOVER.store(true, Ordering::SeqCst);
                     wheel_state.clear();
                     #[cfg(windows)]
@@ -169,6 +176,12 @@ fn main() {
                     wheel_state.clear();
                     #[cfg(windows)]
                     uninstall_wheel_hook();
+                }
+                tray_icon::TrayIconEvent::DoubleClick { .. } => {
+                    IS_HOVER.store(true, Ordering::SeqCst);
+                    wheel_state.clear();
+                    #[cfg(windows)]
+                    install_wheel_hook();
                 }
                 _ => {}
             }
