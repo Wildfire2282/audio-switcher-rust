@@ -601,7 +601,7 @@ pub fn build_menu(
     let lang_sub =
         Submenu::with_id_and_items("language", "Language", true, &[&lang_zh, &lang_en]).unwrap();
 
-    let about = MenuItem::with_id("about", "github.com/Wildfire2282", true, None);
+    let about = MenuItem::with_id("about", tr("about", lang), true, None);
     let exit = MenuItem::with_id("exit", tr("exit", lang), true, None);
 
     let menu = Menu::new();
