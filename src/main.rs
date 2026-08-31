@@ -29,12 +29,12 @@ unsafe extern "system" fn hook_proc(
     l_param: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, MOUSEHOOKSTRUCTEX, WM_MOUSEWHEEL,
+        CallNextHookEx, MSLLHOOKSTRUCT, WM_MOUSEWHEEL,
     };
     if n_code >= 0 && w_param.0 as u32 == WM_MOUSEWHEEL {
-        let info = &*(l_param.0 as *const MOUSEHOOKSTRUCTEX);
+        let info = &*(l_param.0 as *const MSLLHOOKSTRUCT);
         let delta = (info.mouseData >> 16) as u16 as i16 as i32;
-        WHEEL_DELTA.store(delta, Ordering::SeqCst);
+        WHEEL_DELTA.fetch_add(delta, Ordering::SeqCst);
         WHEEL_PENDING.store(true, Ordering::SeqCst);
     }
     CallNextHookEx(None, n_code, w_param, l_param)
@@ -46,12 +46,8 @@ fn install_wheel_hook() {
         return;
     }
     unsafe {
-        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_MOUSE_LL};
-        let hinst = GetModuleHandleW(PCWSTR::null())
-            .ok()
-            .map(|h| windows::Win32::Foundation::HINSTANCE(h.0));
-        if let Ok(hook) = SetWindowsHookExW(WH_MOUSE_LL, Some(hook_proc), hinst, 0) {
+        if let Ok(hook) = SetWindowsHookExW(WH_MOUSE_LL, Some(hook_proc), None, 0) {
             HOOK_HANDLE.store(hook.0 as usize, Ordering::SeqCst);
         }
     }
