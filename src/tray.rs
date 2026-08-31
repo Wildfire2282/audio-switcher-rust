@@ -745,16 +745,160 @@ pub fn open_sound_settings() {}
 
 #[cfg(windows)]
 pub fn show_about(lang: &str) {
+    let _ = lang;
     unsafe {
-        let txt = tr("about_text", lang);
-        let wide: Vec<u16> = txt.encode_utf16().chain(std::iter::once(0)).collect();
-        let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
-        MessageBoxW(
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+        use windows::Win32::Graphics::Gdi::HBRUSH;
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::Controls::{
+            InitCommonControlsEx, INITCOMMONCONTROLSEX, ICC_LINK_CLASS,
+        };
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+            IsWindow, LoadCursorW, PostQuitMessage, RegisterClassW, TranslateMessage,
+            IDC_ARROW, MSG, WINDOW_EX_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY,
+            WM_NOTIFY, WNDCLASSW, WS_CAPTION, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+        };
+        const NM_CLICK: u32 = 0xFFFFFFFE;
+        const NM_RETURN: u32 = 0xFFFFFFFC;
+        unsafe extern "system" fn wndproc_about(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+        ) -> LRESULT {
+            use windows::core::w;
+            
+            use windows::Win32::UI::WindowsAndMessaging::{
+                CreateWindowExW as CreateW, HMENU, WS_CHILD, WS_VISIBLE,
+            };
+            match msg {
+                WM_CREATE => {
+                    let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
+                    let hinst2 =
+                        windows::Win32::Foundation::HINSTANCE(hinst.0);
+                    let _ = CreateW(
+                        WINDOW_EX_STYLE(0),
+                        w!("STATIC"),
+                        w!("GitHub:"),
+                        WS_CHILD | WS_VISIBLE,
+                        15,
+                        20,
+                        60,
+                        20,
+                        Some(hwnd),
+                        None,
+                        Some(hinst2),
+                        None,
+                    );
+                    let _ = CreateW(
+                        WINDOW_EX_STYLE(0),
+                        w!("SysLink"),
+                        w!("<a href=\"https://github.com\">https://github.com</a>"),
+                        WS_CHILD | WS_VISIBLE,
+                        80,
+                        20,
+                        260,
+                        20,
+                        Some(hwnd),
+                        Some(HMENU(101 as *mut std::ffi::c_void)),
+                        Some(hinst2),
+                        None,
+                    );
+                    let _ = CreateW(
+                        WINDOW_EX_STYLE(0),
+                        w!("BUTTON"),
+                        w!("确定"),
+                        WS_CHILD | WS_VISIBLE,
+                        150,
+                        80,
+                        80,
+                        26,
+                        Some(hwnd),
+                        Some(HMENU(std::ptr::dangling_mut::<std::ffi::c_void>())),
+                        Some(hinst2),
+                        None,
+                    );
+                    LRESULT(0)
+                }
+                WM_COMMAND => {
+                    let id = (wparam.0 & 0xFFFF) as u16;
+                    if id == 1 {
+                        let _ = DestroyWindow(hwnd);
+                    }
+                    LRESULT(0)
+                }
+                WM_NOTIFY => {
+                    let code = unsafe { *(lparam.0 as *const u32).add(2) };
+                    if code == NM_CLICK || code == NM_RETURN {
+                        let url: Vec<u16> = "https://github.com\0".encode_utf16().collect();
+                        let op: Vec<u16> = "open\0".encode_utf16().collect();
+                        let _ = ShellExecuteW(
+                            None,
+                            PCWSTR(op.as_ptr()),
+                            PCWSTR(url.as_ptr()),
+                            PCWSTR::null(),
+                            PCWSTR::null(),
+                            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+                        );
+                    }
+                    LRESULT(0)
+                }
+                WM_CLOSE => {
+                    let _ = DestroyWindow(hwnd);
+                    LRESULT(0)
+                }
+                WM_DESTROY => {
+                    PostQuitMessage(0);
+                    LRESULT(0)
+                }
+                _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            }
+        }
+        let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
+        let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
+        let icc = INITCOMMONCONTROLSEX {
+            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_LINK_CLASS,
+        };
+        let _ = InitCommonControlsEx(&icc);
+        let class_name = w!("AudioSwitcherAbout");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(wndproc_about),
+            hInstance: hinst2,
+            lpszClassName: class_name,
+            hbrBackground: HBRUSH(16 as *mut std::ffi::c_void),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            ..Default::default()
+        };
+        RegisterClassW(&wc);
+        let hwnd = match CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            class_name,
+            w!("关于"),
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+            100,
+            100,
+            380,
+            160,
             None,
-            PCWSTR(wide.as_ptr()),
-            PCWSTR(title.as_ptr()),
-            MB_OK,
-        );
+            None,
+            Some(hinst2),
+            None,
+        ) {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+            if !IsWindow(Some(hwnd)).as_bool() {
+                break;
+            }
+        }
     }
 }
 
