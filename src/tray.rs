@@ -601,7 +601,7 @@ pub fn build_menu(
     let lang_sub =
         Submenu::with_id_and_items("language", "Language", true, &[&lang_zh, &lang_en]).unwrap();
 
-    let about = MenuItem::with_id("about", tr("about", lang), true, None);
+    let about = MenuItem::with_id("about", "github.com/Wildfire2282", true, None);
     let exit = MenuItem::with_id("exit", tr("exit", lang), true, None);
 
     let menu = Menu::new();
@@ -743,132 +743,6 @@ pub fn open_sound_settings() {
 #[cfg(not(windows))]
 pub fn open_sound_settings() {}
 
-#[cfg(windows)]
-pub fn show_about(lang: &str) {
-    let _ = lang;
-    unsafe {
-        use windows::core::{w, PCWSTR};
-        use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-        use windows::Win32::Graphics::Gdi::HBRUSH;
-        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-        use windows::Win32::UI::Controls::{
-            InitCommonControlsEx, INITCOMMONCONTROLSEX, ICC_LINK_CLASS,
-        };
-        use windows::Win32::UI::Shell::ShellExecuteW;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-            IsWindow, LoadCursorW, PostQuitMessage, RegisterClassW, TranslateMessage, IDC_ARROW,
-            MSG, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WNDCLASSW,
-            WM_NOTIFY, WS_CAPTION, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
-        };
-        unsafe extern "system" fn wndproc_about(
-            hwnd: HWND,
-            msg: u32,
-            wparam: WPARAM,
-            lparam: LPARAM,
-        ) -> LRESULT {
-            use windows::core::w;
-            use windows::Win32::UI::WindowsAndMessaging::{
-                CreateWindowExW as CreateW, HMENU, WS_CHILD, WS_VISIBLE,
-            };
-            match msg {
-                WM_CREATE => {
-                    let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
-                    let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
-                    let _ = CreateW(
-                        WINDOW_EX_STYLE(0),
-                        w!("SysLink"),
-                        w!("<a href=\"https://github.com/Wildfire2282/\">github.com/Wildfire2282/</a>"),
-                        WS_CHILD | WS_VISIBLE,
-                        60,
-                        45,
-                        260,
-                        20,
-                        Some(hwnd),
-                        Some(HMENU(101 as *mut std::ffi::c_void)),
-                        Some(hinst2),
-                        None,
-                    );
-                    LRESULT(0)
-                }
-                WM_NOTIFY => {
-                    // SysLink 通过 WM_NOTIFY/NM_CLICK(0xFFFFFFFE) 与 NM_RETURN(0xFFFFFFFC) 通知点击
-                    let code = unsafe {
-                        let hdr = &*(lparam.0 as *const windows::Win32::UI::Controls::NMHDR);
-                        hdr.code
-                    };
-                    if code == 0xFFFFFFFE || code == 0xFFFFFFFC {
-                        let url: Vec<u16> = "https://github.com/Wildfire2282/\0".encode_utf16().collect();
-                        let op: Vec<u16> = "open\0".encode_utf16().collect();
-                        let _ = ShellExecuteW(
-                            None,
-                            PCWSTR(op.as_ptr()),
-                            PCWSTR(url.as_ptr()),
-                            PCWSTR::null(),
-                            PCWSTR::null(),
-                            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
-                        );
-                    }
-                    LRESULT(0)
-                }
-                WM_CLOSE => {
-                    let _ = DestroyWindow(hwnd);
-                    LRESULT(0)
-                }
-                WM_DESTROY => {
-                    PostQuitMessage(0);
-                    LRESULT(0)
-                }
-                _ => DefWindowProcW(hwnd, msg, wparam, lparam),
-            }
-        }
-        let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
-        let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
-        let icc = INITCOMMONCONTROLSEX {
-            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_LINK_CLASS,
-        };
-        let _ = InitCommonControlsEx(&icc);
-        let class_name = w!("AudioSwitcherAbout");
-        let wc = WNDCLASSW {
-            lpfnWndProc: Some(wndproc_about),
-            hInstance: hinst2,
-            lpszClassName: class_name,
-            hbrBackground: HBRUSH(16 as *mut std::ffi::c_void),
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            ..Default::default()
-        };
-        RegisterClassW(&wc);
-        let hwnd = match CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            class_name,
-            w!("关于"),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-            100,
-            100,
-            360,
-            130,
-            None,
-            None,
-            Some(hinst2),
-            None,
-        ) {
-            Ok(h) => h,
-            Err(_) => return,
-        };
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-            if !IsWindow(Some(hwnd)).as_bool() {
-                break;
-            }
-        }
-    }
-}
-
-#[cfg(not(windows))]
-pub fn show_about(_lang: &str) {}
 
 #[cfg(windows)]
 pub fn show_error_invalid_custom(lang: &str) {

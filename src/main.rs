@@ -351,7 +351,22 @@ fn main() {
                         );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
-                    "about" => tray::show_about(&cfg.lang),
+                    "about" => {
+                        #[cfg(windows)]
+                        unsafe {
+                            let url: Vec<u16> =
+                                "https://github.com/Wildfire2282/\0".encode_utf16().collect();
+                            let op: Vec<u16> = "open\0".encode_utf16().collect();
+                            let _ = windows::Win32::UI::Shell::ShellExecuteW(
+                                None,
+                                PCWSTR(op.as_ptr()),
+                                PCWSTR(url.as_ptr()),
+                                PCWSTR::null(),
+                                PCWSTR::null(),
+                                windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+                            );
+                        }
+                    }
                     "exit" => {
                         #[cfg(windows)]
                         uninstall_wheel_hook();
