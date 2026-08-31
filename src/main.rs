@@ -92,14 +92,19 @@ fn cursor_over_tray(wrapper: &tray::TrayWrapper) -> bool {
             return false;
         }
         if let Some(rect) = wrapper.tray.rect() {
+            // Shell_NotifyIconGetRect 在不同 DPI/任务栏模式下可能给出偏小或偏移的矩形，
+            // 且托盘图标在溢出区时 rect 指向溢出按钮而非图标本身。
+            // 放宽 16px 容差并对 None 兜底为 true（避免 rect 获取失败时误判为未悬停）
             let x = pt.x as f64;
             let y = pt.y as f64;
-            x >= rect.position.x
-                && x < rect.position.x + rect.size.width as f64
-                && y >= rect.position.y
-                && y < rect.position.y + rect.size.height as f64
+            let pad = 16.0;
+            x >= rect.position.x - pad
+                && x < rect.position.x + rect.size.width as f64 + pad
+                && y >= rect.position.y - pad
+                && y < rect.position.y + rect.size.height as f64 + pad
         } else {
-            false
+            // rect 获取失败时不阻断滚轮，交由 IS_HOVER/优雅期判定
+            true
         }
     }
 }
@@ -508,7 +513,8 @@ fn main() {
             let is_hover = IS_HOVER.load(Ordering::SeqCst);
             let over = cursor_over_tray(&tray_wrapper);
             let elapsed = last_hover_instant.elapsed().as_millis();
-            let allow = (is_hover || elapsed < 900 || over) && delta != 0;
+            // 900ms 对 TrackPopupMenu 模态（常 1-2s）过短，延长至 2500ms
+            let allow = (is_hover || elapsed < 2500 || over) && delta != 0;
             debug_log(&format!(
                 "wheel pending delta={} is_hover={} elapsed={} over={} allow={} rect={:?}",
                 delta,
