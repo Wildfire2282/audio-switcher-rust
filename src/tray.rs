@@ -758,7 +758,7 @@ pub fn show_about(lang: &str) {
         use windows::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
             IsWindow, LoadCursorW, PostQuitMessage, RegisterClassW, TranslateMessage, IDC_ARROW,
-            MSG, WINDOW_EX_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSW,
+            MSG, WINDOW_EX_STYLE, WM_CLOSE, WM_CREATE, WM_DESTROY, WNDCLASSW,
             WM_NOTIFY, WS_CAPTION, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
         };
         unsafe extern "system" fn wndproc_about(
@@ -777,25 +777,11 @@ pub fn show_about(lang: &str) {
                     let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
                     let _ = CreateW(
                         WINDOW_EX_STYLE(0),
-                        w!("STATIC"),
-                        w!("GitHub:"),
-                        WS_CHILD | WS_VISIBLE,
-                        15,
-                        20,
-                        60,
-                        20,
-                        Some(hwnd),
-                        None,
-                        Some(hinst2),
-                        None,
-                    );
-                    let _ = CreateW(
-                        WINDOW_EX_STYLE(0),
                         w!("SysLink"),
-                        w!("<a href=\"https://github.com\">https://github.com</a>"),
+                        w!("<a href=\"https://github.com/Wildfire2282/\">github.com/Wildfire2282/</a>"),
                         WS_CHILD | WS_VISIBLE,
-                        80,
-                        20,
+                        60,
+                        45,
                         260,
                         20,
                         Some(hwnd),
@@ -803,27 +789,6 @@ pub fn show_about(lang: &str) {
                         Some(hinst2),
                         None,
                     );
-                    let _ = CreateW(
-                        WINDOW_EX_STYLE(0),
-                        w!("BUTTON"),
-                        w!("确定"),
-                        WS_CHILD | WS_VISIBLE,
-                        150,
-                        80,
-                        80,
-                        26,
-                        Some(hwnd),
-                        Some(HMENU(std::ptr::dangling_mut::<std::ffi::c_void>())),
-                        Some(hinst2),
-                        None,
-                    );
-                    LRESULT(0)
-                }
-                WM_COMMAND => {
-                    let id = (wparam.0 & 0xFFFF) as u16;
-                    if id == 1 {
-                        let _ = DestroyWindow(hwnd);
-                    }
                     LRESULT(0)
                 }
                 WM_NOTIFY => {
@@ -833,7 +798,7 @@ pub fn show_about(lang: &str) {
                         hdr.code
                     };
                     if code == 0xFFFFFFFE || code == 0xFFFFFFFC {
-                        let url: Vec<u16> = "https://github.com\0".encode_utf16().collect();
+                        let url: Vec<u16> = "https://github.com/Wildfire2282/\0".encode_utf16().collect();
                         let op: Vec<u16> = "open\0".encode_utf16().collect();
                         let _ = ShellExecuteW(
                             None,
@@ -881,8 +846,8 @@ pub fn show_about(lang: &str) {
             WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
             100,
             100,
-            380,
-            160,
+            360,
+            130,
             None,
             None,
             Some(hinst2),
