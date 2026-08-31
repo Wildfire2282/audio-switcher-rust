@@ -36,6 +36,24 @@ unsafe extern "system" fn hook_proc(
         let delta = (info.mouseData >> 16) as u16 as i16 as i32;
         WHEEL_DELTA.fetch_add(delta, Ordering::SeqCst);
         WHEEL_PENDING.store(true, Ordering::SeqCst);
+        // 低开销诊断：仅在文件存在时追加，避免每格都刷盘影响性能可后续移除
+        // 使用 debug_log（内部按 TEMP 路径追加）
+        let msg = format!("hook wheel delta={} pending", delta);
+        let path = std::env::var("TEMP")
+            .map(|t| std::path::PathBuf::from(t).join("audio-switcher-rust-debug.log"))
+            .unwrap_or_else(|_| std::path::PathBuf::from("audio-switcher-rust-debug.log"));
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(
+                f,
+                "[{}] {}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis(),
+                msg
+            );
+        }
     }
     CallNextHookEx(None, n_code, w_param, l_param)
 }
@@ -90,6 +108,24 @@ fn cursor_over_tray(_wrapper: &tray::TrayWrapper) -> bool {
     false
 }
 
+fn debug_log(msg: &str) {
+    let path = std::env::var("TEMP")
+        .map(|t| std::path::PathBuf::from(t).join("audio-switcher-rust-debug.log"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("audio-switcher-rust-debug.log"));
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(
+            f,
+            "[{}] {}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            msg
+        );
+    }
+}
+
 fn main() {
     let _guard = match system::SingleInstanceGuard::new("audio-switcher-rust-single-instance-v1") {
         Some(g) => g,
@@ -102,6 +138,7 @@ fn main() {
     }
 
     tray::log_verbose(&cfg, "AudioSwitcher started");
+    debug_log("AudioSwitcher started");
 
     #[cfg(windows)]
     unsafe {
@@ -133,6 +170,15 @@ fn main() {
 
     #[cfg(windows)]
     install_wheel_hook();
+    #[cfg(windows)]
+    {
+        let h = HOOK_HANDLE.load(Ordering::SeqCst);
+        debug_log(&format!("hook installed at startup handle={:#x}", h));
+        if h == 0 {
+            let err = std::io::Error::last_os_error();
+            debug_log(&format!("hook install failed err={}", err));
+        }
+    }
 
     let menu_rx = muda::MenuEvent::receiver();
     let tray_rx = tray_icon::TrayIconEvent::receiver();
@@ -167,6 +213,7 @@ fn main() {
         }
 
         if let Ok(event) = tray_rx.try_recv() {
+            debug_log(&format!("tray event: {:?}", event));
             match event {
                 tray_icon::TrayIconEvent::Click {
                     button: tray_icon::MouseButton::Middle,
@@ -218,17 +265,39 @@ fn main() {
         // 若光标仍在托盘图标矩形内则重建悬停态，无需移出重入。
         #[cfg(windows)]
         {
-            if cursor_over_tray(&tray_wrapper) {
-                if !IS_HOVER.load(Ordering::SeqCst) {
+            let over = cursor_over_tray(&tray_wrapper);
+            // 仅在状态翻转时记录，避免每 10ms 刷日志
+            static LAST_OVER: AtomicBool = AtomicBool::new(false);
+            let prev = LAST_OVER.load(Ordering::SeqCst);
+            if over != prev {
+                LAST_OVER.store(over, Ordering::SeqCst);
+                let rect_dbg = tray_wrapper
+                    .tray
+                    .rect()
+                    .map(|r| format!("rect {} {} {} {}", r.position.x, r.position.y, r.size.width, r.size.height))
+                    .unwrap_or_else(|| "rect None".into());
+                debug_log(&format!(
+                    "cursor_over_tray changed over={} {} is_hover={} elapsed={}ms",
+                    over,
+                    rect_dbg,
+                    IS_HOVER.load(Ordering::SeqCst),
+                    last_hover_instant.elapsed().as_millis()
+                ));
+                if over && !IS_HOVER.load(Ordering::SeqCst) {
                     IS_HOVER.store(true, Ordering::SeqCst);
                     wheel_state.clear();
                 }
+                if over {
+                    last_hover_instant = Instant::now();
+                }
+            } else if over {
                 last_hover_instant = Instant::now();
             }
         }
 
         if let Ok(event) = menu_rx.try_recv() {
             let id = event.id.0.clone();
+            debug_log(&format!("menu event: {}", id));
             if let Some(dev_id) = id.strip_prefix("device_") {
                 match backend.set_default_device(dev_id) {
                     Ok(()) => {
@@ -436,11 +505,20 @@ fn main() {
 
         if WHEEL_PENDING.swap(false, Ordering::SeqCst) {
             let delta = WHEEL_DELTA.swap(0, Ordering::SeqCst);
-            if (IS_HOVER.load(Ordering::SeqCst)
-                || last_hover_instant.elapsed() < Duration::from_millis(900)
-                || cursor_over_tray(&tray_wrapper))
-                && delta != 0
-            {
+            let is_hover = IS_HOVER.load(Ordering::SeqCst);
+            let over = cursor_over_tray(&tray_wrapper);
+            let elapsed = last_hover_instant.elapsed().as_millis();
+            let allow = (is_hover || elapsed < 900 || over) && delta != 0;
+            debug_log(&format!(
+                "wheel pending delta={} is_hover={} elapsed={} over={} allow={} rect={:?}",
+                delta,
+                is_hover,
+                elapsed,
+                over,
+                allow,
+                tray_wrapper.tray.rect()
+            ));
+            if allow {
                 let now = Instant::now();
                 let step = wheel_state.push(now, cfg.wheel_acceleration, delta);
                 let total = tray::WheelState::total_step(delta, step);
@@ -454,8 +532,11 @@ fn main() {
                             "wheel delta {delta} step {step} total {total} vol {vol}->{clamped}"
                         ),
                     );
+                    debug_log(&format!("wheel applied vol {}->{} clamped {}", vol, new_vol, clamped));
                     update_tooltip(&tray_wrapper, &backend, &cfg);
                 }
+            } else {
+                debug_log(&format!("wheel ignored delta={} hover={} elapsed={} over={}", delta, is_hover, elapsed, over));
             }
         }
 
