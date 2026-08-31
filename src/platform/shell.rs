@@ -4,9 +4,21 @@
 ///
 /// # Errors
 ///
-/// Returns `Err` when `ShellExecuteW` returns a value `<= 32`.
+/// Returns `Err` when `ShellExecuteW` returns a value `<= 32` or when
+/// `file`/`params` contain interior NUL bytes.
+/// # Panics
+///
+/// Never panics — errors are returned.
 #[cfg(windows)]
 pub(crate) fn open_file(file: &str, params: Option<&str>) -> Result<(), String> {
+    if file.contains('\0') {
+        return Err("file contains interior NUL".into());
+    }
+    if let Some(p) = params {
+        if p.contains('\0') {
+            return Err("params contains interior NUL".into());
+        }
+    }
     // SAFETY: ShellExecuteW with null-terminated PCWSTRs living through the call.
     unsafe {
         use windows::core::PCWSTR;
@@ -23,8 +35,8 @@ pub(crate) fn open_file(file: &str, params: Option<&str>) -> Result<(), String> 
             PCWSTR::null(),
             SW_SHOWNORMAL,
         );
-        if res.0 as isize <= 32 {
-            Err(format!("ShellExecute failed: {}", res.0 as isize))
+        if (res.0 as usize) <= 32 {
+            Err(format!("ShellExecute failed: {}", res.0 as usize))
         } else {
             Ok(())
         }

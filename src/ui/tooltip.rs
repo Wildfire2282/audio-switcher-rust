@@ -7,13 +7,14 @@ use crate::ui::i18n::tr;
 /// Build the tray tooltip text.
 ///
 /// - Muted → localized "Muted".
-/// - Otherwise `"Device - 62%"` truncated to 60 characters.
+/// - Otherwise `"Device - 62%"` truncated to 60 characters, control chars sanitized.
 #[must_use]
 pub fn format_tooltip(device: Option<&AudioDevice>, volume: u32, mute: bool, lang: Lang) -> String {
     if mute {
         tr("muted", lang)
     } else if let Some(d) = device {
-        let base = format!("{} - {volume}%", d.name);
+        let sanitized = d.name.replace(['\r', '\n', '\t'], " ");
+        let base = format!("{sanitized} - {volume}%");
         truncate(&base)
     } else {
         format!("{volume}%")
@@ -21,11 +22,33 @@ pub fn format_tooltip(device: Option<&AudioDevice>, volume: u32, mute: bool, lan
 }
 
 fn truncate(s: &str) -> String {
+    // Single-pass char counting + truncation, handles graphemes via chars (conservative).
+    let mut count = 0usize;
+    let mut end = s.len();
+    for (idx, _) in s.char_indices() {
+        if count >= 60 {
+            end = idx;
+            break;
+        }
+        count += 1;
+    }
+    if count < 60 && s.chars().count() <= 60 {
+        // Fast path already counted, but need exact check
+        if s.chars().count() <= 60 {
+            return s.to_string();
+        }
+    }
     if s.chars().count() > 60 {
         let t: String = s.chars().take(58).collect();
         format!("{t}…")
     } else {
-        s.to_string()
+        // Use end computed above when possible
+        if end != s.len() {
+            let t: String = s.chars().take(58).collect();
+            format!("{t}…")
+        } else {
+            s.to_string()
+        }
     }
 }
 
@@ -47,6 +70,14 @@ mod tests {
     }
 
     #[test]
+    fn tooltip_sanitizes_newline() {
+        let dev = AudioDevice { id: "a".into(), name: "Speaker\nInjected".into() };
+        let tip = format_tooltip(Some(&dev), 50, false, Lang::En);
+        assert!(!tip.contains('\n'));
+        assert!(tip.contains("Speaker Injected"));
+    }
+
+    #[test]
     fn clamp_via_config() {
         let mut cfg = crate::config::AppConfig {
             volume_limit_enabled: true,
@@ -57,5 +88,7 @@ mod tests {
         assert_eq!(clamp_volume(80, &cfg), 30);
         cfg.volume_limit_enabled = false;
         assert_eq!(clamp_volume(80, &cfg), 80);
+        // Disabled still caps to 100
+        assert_eq!(clamp_volume(150, &cfg), 100);
     }
 }

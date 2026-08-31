@@ -38,6 +38,9 @@ impl MenuAction {
     #[must_use]
     pub fn from_id(id: &str) -> Self {
         if let Some(dev) = id.strip_prefix("device_") {
+            if dev.is_empty() || dev.contains('\0') {
+                return Self::Unknown(id.to_string());
+            }
             return Self::Device(dev.to_string());
         }
         match id {

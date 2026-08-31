@@ -12,14 +12,26 @@ const CURRENT_VERSION: u32 = 1;
 
 /// Cached config path — computed once per process.
 static CONFIG_PATH_CACHE: LazyLock<PathBuf> = LazyLock::new(|| {
+    let try_dir = |p: PathBuf| {
+        if p.is_absolute() {
+            Some(p.join("AudioSwitcher").join("config.json"))
+        } else {
+            None
+        }
+    };
     if let Ok(appdata) = std::env::var("APPDATA") {
-        PathBuf::from(appdata).join("AudioSwitcher").join("config.json")
-    } else if let Ok(home) = std::env::var("USERPROFILE") {
-        PathBuf::from(home)
-            .join("AppData")
-            .join("Roaming")
-            .join("AudioSwitcher")
-            .join("config.json")
+        if let Some(p) = try_dir(PathBuf::from(appdata)) {
+            return p;
+        }
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        if let Some(p) = try_dir(PathBuf::from(home).join("AppData").join("Roaming")) {
+            return p;
+        }
+    }
+    // Fallback to temp_dir to avoid writing to attacker-controlled CWD (e.g. System32).
+    if let Some(p) = try_dir(std::env::temp_dir()) {
+        return p;
     } else {
         PathBuf::from("config.json")
     }
@@ -90,12 +102,14 @@ where
     ser.serialize_str(lang.as_str())
 }
 
+// Lang uses deserialize_lang/serialize_lang via AppConfig field attributes;
+// no separate Serialize/Deserialize impl to avoid duplication (see review).
 impl Serialize for Lang {
     fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        ser.serialize_str(self.as_str())
+        serialize_lang(self, ser)
     }
 }
 
@@ -105,6 +119,24 @@ impl<'de> Deserialize<'de> for Lang {
         D: Deserializer<'de>,
     {
         deserialize_lang(de)
+    }
+}
+
+fn deserialize_volume_limit<'de, D>(de: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error as DeError;
+    let v = serde_json::Value::deserialize(de)?;
+    match v {
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .and_then(|x| u32::try_from(x).ok())
+            .ok_or_else(|| DeError::custom("invalid volume_limit")),
+        serde_json::Value::String(s) => {
+            s.trim().parse::<u32>().map_err(|_| DeError::custom("invalid volume_limit"))
+        }
+        _ => Err(DeError::custom("invalid volume_limit")),
     }
 }
 
@@ -138,7 +170,12 @@ pub struct AppConfig {
     #[serde(default = "default_volume_limit_enabled")]
     pub volume_limit_enabled: bool,
     /// Maximum volume percent when limiting is enabled (1..=100).
-    #[serde(default = "default_volume_limit")]
+    #[serde(
+        default = "default_volume_limit",
+        deserialize_with = "deserialize_volume_limit",
+        alias = "volumeLimit",
+        alias = "VolumeLimit"
+    )]
     pub volume_limit: u32,
     /// Whether wheel acceleration (fast scroll → larger steps) is enabled.
     #[serde(default = "default_wheel_accel")]
@@ -207,15 +244,51 @@ impl AppConfig {
         match std::fs::read(path) {
             Ok(bytes) => match serde_json::from_slice::<Self>(&bytes) {
                 Ok(mut cfg) => {
-                    if cfg.version != CURRENT_VERSION {
-                        cfg.version = CURRENT_VERSION;
+                    // Version migration scaffold.
+                    match cfg.version {
+                        CURRENT_VERSION => {}
+                        0 => {
+                            cfg.version = CURRENT_VERSION;
+                        }
+                        _ => {
+                            // Unknown future version — keep fields but bump version.
+                            cfg.version = CURRENT_VERSION;
+                        }
                     }
                     if !(1..=100).contains(&cfg.volume_limit) {
                         cfg.volume_limit = default_volume_limit();
                     }
                     cfg
                 }
-                Err(_) => {
+                Err(e) => {
+                    // Try tolerant recovery: salvage valid fields via Value merge.
+                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        if let serde_json::Value::Object(mut map) = val {
+                            // Ensure volume_limit is salvageable even if string-typed.
+                            if let Some(v) = map.get("volume_limit").cloned() {
+                                if let serde_json::Value::String(s) = v {
+                                    if let Ok(n) = s.trim().parse::<u32>() {
+                                        if (1..=100).contains(&n) {
+                                            map.insert(
+                                                "volume_limit".into(),
+                                                serde_json::Value::Number(n.into()),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            if let Ok(mut cfg) = serde_json::from_value::<Self>(
+                                serde_json::Value::Object(map.clone()),
+                            ) {
+                                if !(1..=100).contains(&cfg.volume_limit) {
+                                    cfg.volume_limit = default_volume_limit();
+                                }
+                                cfg.version = CURRENT_VERSION;
+                                let _ = cfg.save_to(path);
+                                return cfg;
+                            }
+                        }
+                    }
                     // Corrupted file — back up original before overwriting.
                     let backup = {
                         let nanos = std::time::SystemTime::now()
@@ -233,6 +306,7 @@ impl AppConfig {
                         ))
                     };
                     let _ = std::fs::write(&backup, &bytes);
+                    let _ = e;
                     let def = Self::default();
                     let _ = def.save_to(path);
                     def
@@ -252,7 +326,9 @@ impl AppConfig {
 
     /// Non-blocking save; returns a handle that can be joined in tests.
     ///
-    /// Fire-and-forget callers may drop the handle.
+    /// Fire-and-forget callers may drop the handle, but the write may be lost
+    /// if the process exits before the thread completes. Prefer joining the
+    /// handle at exit or using [`Self::save_to`] synchronously for critical saves.
     pub fn save(&self) -> std::thread::JoinHandle<std::io::Result<()>> {
         let cfg = self.clone();
         let path = Self::config_path();
@@ -287,17 +363,12 @@ impl AppConfig {
             path.with_file_name(format!("{file_name}.tmp.{pid}-{nanos}-{suffix}"))
         };
         std::fs::write(&tmp_path, json.as_bytes())?;
-        if std::fs::rename(&tmp_path, path).is_ok() {
-            return Ok(());
+        // On Windows rename uses MoveFileExW(REPLACE_EXISTING) and atomically replaces.
+        if let Err(e) = std::fs::rename(&tmp_path, path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
         }
-        let _ = std::fs::remove_file(path);
-        match std::fs::rename(&tmp_path, path) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp_path);
-                Err(e)
-            }
-        }
+        Ok(())
     }
 
     /// Validate a custom threshold string.
@@ -324,12 +395,13 @@ impl AppConfig {
 }
 
 /// Clamp `volume` according to `cfg`.
+/// When limiting is disabled the result is still capped to 100 to preserve invariant.
 #[must_use]
 pub fn clamp_volume(volume: u32, cfg: &AppConfig) -> u32 {
     if cfg.volume_limit_enabled {
         volume.min(cfg.volume_limit)
     } else {
-        volume
+        volume.min(100)
     }
 }
 

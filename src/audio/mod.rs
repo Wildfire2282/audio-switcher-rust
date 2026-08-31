@@ -64,23 +64,47 @@ pub trait AudioBackend {
     fn set_default_device(&mut self, id: &str) -> Result<(), AudioError>;
 
     /// Master volume `0..=100`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Com` on WASAPI failure.
     fn get_volume(&self) -> Result<u32, AudioError>;
 
     /// Set master volume `0..=100` (values outside are clamped by caller).
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Com` on WASAPI failure.
     fn set_volume(&mut self, volume: u32) -> Result<(), AudioError>;
 
     /// Whether the endpoint is muted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Com` on WASAPI failure.
     fn get_mute(&self) -> Result<bool, AudioError>;
 
     /// Set mute state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Com` on WASAPI failure.
     fn set_mute(&mut self, mute: bool) -> Result<(), AudioError>;
 
     /// Clamp volume to `cfg` if limiting is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Com` if current volume cannot be read.
     fn clamp_volume_if_needed(&mut self, cfg: &AppConfig) -> Result<(), AudioError>;
 
     /// Batch fetch `(volume, mute)`; default impl does two calls.
     ///
     /// `RealBackend` overrides with a single `Activate`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Com` on WASAPI failure.
     fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
         Ok((self.get_volume()?, self.get_mute()?))
     }
@@ -155,14 +179,15 @@ mod tests {
     }
 
     #[test]
-    fn mock_empty_keeps_current() {
+    fn mock_empty_shows_empty() {
         let devs = vec![AudioDevice { id: "a".into(), name: "Sp".into() }];
         let mut m = MockBackend::new(devs.clone(), Some("a".into()));
         let _ = m.enumerate_devices().unwrap();
         m.devices = vec![];
         std::thread::sleep(std::time::Duration::from_millis(850));
         let after = m.enumerate_devices().unwrap();
-        assert_eq!(after.len(), 1);
+        // After removal, should show empty — not stale cached list.
+        assert_eq!(after.len(), 0);
     }
 
     #[test]

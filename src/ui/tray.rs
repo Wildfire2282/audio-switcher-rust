@@ -16,12 +16,16 @@ pub struct TrayWrapper {
 
 impl TrayWrapper {
     /// Build a new tray icon and menu for the current config/devices.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the underlying tray icon cannot be created.
     pub fn new(
         cfg: &AppConfig,
         devices: &[AudioDevice],
         default_id: Option<&str>,
         muted: bool,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let handles = build_menu(cfg, devices, default_id, muted);
         let icon = make_icon(muted);
         let tooltip = format_tooltip(
@@ -36,22 +40,26 @@ impl TrayWrapper {
             .with_menu(Box::new(handles.menu.clone()))
             .with_menu_on_left_click(false)
             .build()
-            .expect("tray build failed");
-        Self { tray, handles }
+            .map_err(|e| format!("tray build failed: {e}"))?;
+        Ok(Self { tray, handles })
     }
 
-    /// Update the tooltip text.
+    /// Update the tooltip text (logs on failure).
     pub fn update_tooltip(&self, text: String) {
-        let _ = self.tray.set_tooltip(Some(text));
+        if let Err(e) = self.tray.set_tooltip(Some(text)) {
+            eprintln!("tray set_tooltip failed: {e:?}");
+        }
     }
 
-    /// Update the tray icon for mute state.
+    /// Update the tray icon for mute state (logs on failure).
     pub fn update_icon(&self, muted: bool) {
         let icon = make_icon(muted);
-        let _ = self.tray.set_icon(Some(icon));
+        if let Err(e) = self.tray.set_icon(Some(icon)) {
+            eprintln!("tray set_icon failed: {e:?}");
+        }
     }
 
-    /// Rebuild the context menu from current config/devices.
+    /// Rebuild the context menu from current config/devices (logs on failure).
     pub fn rebuild_menu(
         &mut self,
         cfg: &AppConfig,

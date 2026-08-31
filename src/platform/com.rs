@@ -5,12 +5,16 @@ use windows::core::PCWSTR;
 #[cfg(windows)]
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 
-/// RAII guard for COM.
+/// RAII guard for COM — thread-affine (STA) and `!Send`/`!Sync`.
 ///
-/// Calls `CoInitializeEx` on creation and `CoUninitialize` on drop.
+/// Contains a `PhantomData<*const ()>` marker so it cannot be sent across
+/// threads; `CoUninitialize` must run on the same STA thread that called
+/// `CoInitializeEx`.
 pub struct ComGuard {
     #[cfg(windows)]
     _private: (),
+    /// Marker to make `ComGuard` !Send + !Sync (STA thread-affine).
+    _marker: std::marker::PhantomData<*const ()>,
 }
 
 impl ComGuard {
@@ -44,6 +48,7 @@ impl ComGuard {
         Some(Self {
             #[cfg(windows)]
             _private: (),
+            _marker: std::marker::PhantomData,
         })
     }
 }

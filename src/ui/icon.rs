@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 use tray_icon::Icon;
 
 /// Cached icons — index 0 = unmuted, 1 = muted.
+/// Mutex is required because `Icon` contains `*mut c_void` and is `!Sync`.
 static ICON_CACHE: LazyLock<Mutex<[Option<Icon>; 2]>> = LazyLock::new(|| Mutex::new([None, None]));
 
 /// Create (or fetch from cache) the tray icon for `muted`.
@@ -22,8 +23,9 @@ pub fn make_icon(muted: bool) -> Icon {
     } else {
         include_bytes!("../../icons/tray_unmuted_bg.rgba")
     };
-    // Pre-validated asset: expect only on corrupt build artefacts.
-    let icon = Icon::from_rgba(rgba.to_vec(), 32, 32).expect("tray icon rgba invalid");
+    let icon = Icon::from_rgba(rgba.to_vec(), 32, 32).unwrap_or_else(|e| {
+        panic!("tray icon rgba invalid: muted={muted} len={} err={e}", rgba.len())
+    });
     ICON_CACHE.lock()[idx] = Some(icon.clone());
     icon
 }

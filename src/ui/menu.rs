@@ -24,13 +24,24 @@ pub fn build_menu(
 ) -> MenuHandles {
     let lang = cfg.lang;
 
+    // Sanitize device id for muda (no NUL/control) and truncate long names.
+    let sanitize_id = |id: &str| -> String { id.replace(['\0', '\n', '\r'], "_") };
+    let truncate_name = |name: &str| -> String {
+        let sanitized = name.replace(['\r', '\n', '\t'], " ");
+        if sanitized.chars().count() > 60 {
+            let t: String = sanitized.chars().take(58).collect();
+            format!("{t}…")
+        } else {
+            sanitized
+        }
+    };
     let device_items: Vec<CheckMenuItem> = devices
         .iter()
         .map(|dev| {
             let checked = default_id == Some(dev.id.as_str());
             CheckMenuItem::with_id(
-                format!("device_{}", dev.id),
-                dev.name.clone(),
+                format!("device_{}", sanitize_id(&dev.id)),
+                truncate_name(&dev.name),
                 true,
                 checked,
                 None,

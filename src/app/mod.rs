@@ -45,7 +45,7 @@ pub struct App<B: AudioBackend = RealBackend> {
 ///
 /// ```
 /// use audio_switcher_rust::app::AppBuilder;
-/// use audio_switcher_rust::platform::ComGuard;
+/// use audio_switcher_rust::ComGuard;
 /// // let com = ComGuard::init().unwrap();
 /// // let app = AppBuilder::new(com).build();
 /// ```
@@ -69,11 +69,19 @@ impl AppBuilder {
     }
 
     /// Build the [`App`] with the real backend.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tray icon cannot be created (e.g. Explorer not running).
     #[must_use]
     pub fn build(self) -> App<RealBackend> {
         let cfg = self.cfg.unwrap_or_else(AppConfig::load);
         let mut backend = RealBackend::new();
-        let mut tray = TrayWrapper::new(&cfg, &[], None, false);
+        let mut tray = TrayWrapper::new(&cfg, &[], None, false).unwrap_or_else(|e| {
+            eprintln!("tray build failed, retrying: {e}");
+            // Fallback: try once more; if still fails, panic with context.
+            TrayWrapper::new(&cfg, &[], None, false).expect("tray build failed twice")
+        });
         let snap = backend.fetch_snapshot_clamped(&cfg);
         let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
         tray.rebuild_menu(&cfg, &snap.devices, default_id.as_deref(), snap.mute);
@@ -114,10 +122,17 @@ impl App<RealBackend> {
 
 impl<B: AudioBackend> App<B> {
     /// Create an `App` with an injected backend.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the tray icon cannot be created.
     pub fn with_backend(com: crate::platform::ComGuard, mut backend: B) -> Self {
         let cfg = AppConfig::load();
         ensure_autostart(&cfg);
-        let mut tray = TrayWrapper::new(&cfg, &[], None, false);
+        let mut tray = TrayWrapper::new(&cfg, &[], None, false).unwrap_or_else(|e| {
+            eprintln!("tray build failed: {e}");
+            TrayWrapper::new(&cfg, &[], None, false).expect("tray build retry failed")
+        });
         let snap = backend.fetch_snapshot_clamped(&cfg);
         let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
         tray.rebuild_menu(&cfg, &snap.devices, default_id.as_deref(), snap.mute);
@@ -165,7 +180,8 @@ impl<B: AudioBackend> App<B> {
         self.tray.update_icon(snap.mute);
     }
 
-    fn update_tooltip_and_icon(&self) {
+    fn update_tooltip_and_icon(&mut self) {
+        // Single COM round-trip via get_volume_and_mute; fallback only on error.
         #[cfg(windows)]
         if let Ok((vol, mute)) = self.backend.get_volume_and_mute() {
             let dev = self.backend.get_default_device();
@@ -181,7 +197,10 @@ impl<B: AudioBackend> App<B> {
     }
 
     fn save_and_refresh(&mut self, clamp: bool) {
-        let _ = self.cfg.save();
+        // Synchronous save for critical config — avoids loss on fast exit.
+        if let Err(e) = self.cfg.save_to(&AppConfig::config_path()) {
+            eprintln!("config save failed: {e}");
+        }
         if clamp && self.cfg.volume_limit_enabled {
             let _ = self.backend.clamp_volume_if_needed(&self.cfg);
         }
@@ -223,7 +242,9 @@ impl<B: AudioBackend> App<B> {
             }
             MenuAction::WheelAccel => {
                 self.cfg.wheel_acceleration = !self.cfg.wheel_acceleration;
-                let _ = self.cfg.save();
+                if let Err(e) = self.cfg.save_to(&AppConfig::config_path()) {
+                    eprintln!("config save failed: {e}");
+                }
                 // Rebuild menu only — reuse snapshot path to keep COM calls batched.
                 self.refresh_ui();
             }
@@ -261,7 +282,9 @@ impl<B: AudioBackend> App<B> {
                     PostQuitMessage(0);
                 }
             }
-            MenuAction::Unknown(_) => {}
+            MenuAction::Unknown(s) => {
+                eprintln!("unknown menu id: {s}");
+            }
         }
     }
 
@@ -327,17 +350,24 @@ impl<B: AudioBackend> App<B> {
                 || self.last_hover.elapsed() < Duration::from_millis(2500);
             if need && self.last_cursor_check.elapsed() > Duration::from_millis(80) {
                 self.last_cursor_check = Instant::now();
-                if let Some(over) = hook::cursor_over_tray(&self.tray) {
-                    self.last_cursor_over = over;
-                    if over {
-                        if !self.is_hover {
-                            self.is_hover = true;
-                            self.wheel.clear();
+                match hook::cursor_over_tray(&self.tray) {
+                    Some(over) => {
+                        self.last_cursor_over = over;
+                        if over {
+                            if !self.is_hover {
+                                self.is_hover = true;
+                                self.wheel.clear();
+                            }
+                            self.last_hover = Instant::now();
                         }
-                        self.last_hover = Instant::now();
+                    }
+                    None => {
+                        // Tray rect unavailable — treat as not over after grace period.
+                        if self.last_hover.elapsed() >= Duration::from_millis(2500) {
+                            self.last_cursor_over = false;
+                        }
                     }
                 }
-                // rect None -> keep last_cursor_over as-is, wheel still allowed via grace
             }
         }
     }

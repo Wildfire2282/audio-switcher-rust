@@ -1,3 +1,11 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::ptr_as_ptr,
+    clippy::borrow_as_ptr
+)]
 use super::{AudioBackend, AudioDevice, AudioError, AudioSnapshot};
 use crate::config::{clamp_volume, AppConfig};
 use std::time::{Duration, Instant};
@@ -53,7 +61,9 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
     let wide: Vec<u16> = device_id.encode_utf16().chain(std::iter::once(0)).collect();
     let mut last_err: Option<windows::core::Error> = None;
     for &(clsid, iid, primary_off) in CANDIDATES {
-        let instance: windows::core::Result<IUnknown> = CoCreateInstance(&clsid, None, CLSCTX_ALL);
+        // SAFETY: CoCreateInstance with valid CLSID, no aggregation, CLSCTX_ALL.
+        let instance: windows::core::Result<IUnknown> =
+            unsafe { CoCreateInstance(&clsid, None, CLSCTX_ALL) };
         let Ok(unk) = instance else {
             if let Err(e) = instance {
                 last_err = Some(e);
@@ -123,21 +133,21 @@ struct SuppressGuard;
 #[cfg(windows)]
 impl SuppressGuard {
     fn new() -> Self {
-        SUPPRESS_NOTIFY.store(true, AtomicOrdering::Relaxed);
+        SUPPRESS_NOTIFY.store(true, AtomicOrdering::Release);
         Self
     }
 }
 #[cfg(windows)]
 impl Drop for SuppressGuard {
     fn drop(&mut self) {
-        SUPPRESS_NOTIFY.store(false, AtomicOrdering::Relaxed);
+        SUPPRESS_NOTIFY.store(false, AtomicOrdering::Release);
     }
 }
 
 /// Returns and clears the device-change flag set by `IMMNotificationClient`.
 #[cfg(windows)]
 pub fn take_device_changed() -> bool {
-    DEVICE_CHANGED.swap(false, AtomicOrdering::Relaxed)
+    DEVICE_CHANGED.swap(false, AtomicOrdering::AcqRel)
 }
 
 #[windows_core::implement(windows::Win32::Media::Audio::IMMNotificationClient)]
@@ -150,15 +160,15 @@ impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for Notifier_Impl 
         _device_id: &PCWSTR,
         _new_state: windows::Win32::Media::Audio::DEVICE_STATE,
     ) -> windows::core::Result<()> {
-        DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
+        DEVICE_CHANGED.store(true, AtomicOrdering::Release);
         Ok(())
     }
     fn OnDeviceAdded(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
-        DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
+        DEVICE_CHANGED.store(true, AtomicOrdering::Release);
         Ok(())
     }
     fn OnDeviceRemoved(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
-        DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
+        DEVICE_CHANGED.store(true, AtomicOrdering::Release);
         Ok(())
     }
     fn OnDefaultDeviceChanged(
@@ -167,7 +177,7 @@ impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for Notifier_Impl 
         _role: windows::Win32::Media::Audio::ERole,
         _device_id: &PCWSTR,
     ) -> windows::core::Result<()> {
-        DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
+        DEVICE_CHANGED.store(true, AtomicOrdering::Release);
         Ok(())
     }
     fn OnPropertyValueChanged(
@@ -175,26 +185,29 @@ impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for Notifier_Impl 
         _device_id: &PCWSTR,
         _key: &windows::Win32::Foundation::PROPERTYKEY,
     ) -> windows::core::Result<()> {
-        if SUPPRESS_NOTIFY.load(AtomicOrdering::Relaxed) {
+        if SUPPRESS_NOTIFY.load(AtomicOrdering::Acquire) {
             return Ok(());
         }
-        DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
+        DEVICE_CHANGED.store(true, AtomicOrdering::Release);
         Ok(())
     }
 }
 
 #[cfg(windows)]
 /// Holder for the COM notification client kept for process lifetime.
-/// `IMMNotificationClient` is STA (thread-affine) and not `Send/Sync`, but
-/// we only ever create/register it on the main STA thread and never access
-/// the inner pointer from another thread; `OnceLock` just extends lifetime.
-/// `Send/Sync` is therefore sound for this holder.
+/// `Notifier` is stateless and only touches `DEVICE_CHANGED` atomics, so it
+/// is effectively `Send`/`Sync` even though COM STA objects are normally
+/// thread-affine. We only create/register on the main STA thread, and
+/// `OnceLock` only extends lifetime — no cross-thread COM call is made
+/// through the holder.
 struct NotifierHolder(#[allow(dead_code)] IMMNotificationClient);
 #[cfg(windows)]
-// SAFETY: NotifierHolder is only constructed and accessed on the main STA thread; OnceLock only extends lifetime, no cross-thread access to the inner COM pointer.
+// SAFETY: Notifier only stores atomics; IMMNotificationClient methods are
+// stateless and thread-safe for this implementation. Register is called once
+// on the main STA thread; holding the client for lifetime is sound.
 unsafe impl Send for NotifierHolder {}
 #[cfg(windows)]
-// SAFETY: See Send impl above.
+// SAFETY: see Send impl.
 unsafe impl Sync for NotifierHolder {}
 #[cfg(windows)]
 static NOTIFIER_HOLDER: std::sync::OnceLock<NotifierHolder> = std::sync::OnceLock::new();
@@ -378,12 +391,7 @@ impl RealBackend {
                     }
                 }
             }
-            if devices.is_empty() {
-                if let Some(c) = &self.cached {
-                    return Ok(c.clone());
-                }
-                return Ok(vec![]);
-            }
+            // Always update cache, even if empty — UI must see removal vs stale list.
             self.cached = Some(devices.clone());
             self.cache_time = Some(Instant::now());
             Ok(devices)
@@ -502,13 +510,20 @@ impl AudioBackend for RealBackend {
     }
 
     fn set_default_device(&mut self, id: &str) -> Result<(), AudioError> {
+        if id.is_empty() || id.contains('\0') {
+            return Err(AudioError::Failed("invalid device id".into()));
+        }
         unsafe {
-            let hr = set_default_endpoint_raw(id, eMultimedia.0);
-            if let Err(e) = hr {
-                return Err(AudioError::Failed(e.to_string()));
+            // Primary role: eMultimedia (0), must succeed.
+            set_default_endpoint_raw(id, eMultimedia.0)
+                .map_err(|e| AudioError::Failed(e.to_string()))?;
+            // Secondary roles: best-effort but log failures (do not hide).
+            for role in [0i32, 2i32] {
+                if let Err(e) = set_default_endpoint_raw(id, role) {
+                    // 0x80070490 = not found, 0x80070057 = invalid arg — don't retry, just warn.
+                    eprintln!("set_default role {role} failed: {e}");
+                }
             }
-            let _ = set_default_endpoint_raw(id, 0);
-            let _ = set_default_endpoint_raw(id, 2);
             self.clear_cache();
             Ok(())
         }
@@ -527,18 +542,20 @@ impl AudioBackend for RealBackend {
                 .map_err(AudioError::from)?;
             let vol: IAudioEndpointVolume =
                 dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
-            let mut last_err: Option<windows::core::Error> = None;
-            for _ in 0..2 {
-                match vol.SetMasterVolumeLevelScalar(v, std::ptr::null()) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => last_err = Some(e),
+            match vol.SetMasterVolumeLevelScalar(v, std::ptr::null()) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    // Only retry on busy/timeout HRESULTs; invalid arg is permanent.
+                    let hr = e.code().0 as u32;
+                    if hr == 0x8007001E || hr == 0x800704D4 {
+                        if vol.SetMasterVolumeLevelScalar(v, std::ptr::null()).is_ok() {
+                            return Ok(());
+                        }
+                    }
+                    Self::show_msgbox(&format!("设置音量失败: {}", e));
+                    Err(AudioError::Failed(e.to_string()))
                 }
             }
-            if let Some(e) = last_err {
-                Self::show_msgbox(&format!("设置音量失败: {}", e));
-                return Err(AudioError::Failed(e.to_string()));
-            }
-            Ok(())
         }
     }
 
@@ -554,14 +571,10 @@ impl AudioBackend for RealBackend {
                 .map_err(AudioError::from)?;
             let vol: IAudioEndpointVolume =
                 dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
-            for _ in 0..2 {
-                match vol.SetMute(mute, std::ptr::null()) {
-                    Ok(()) => return Ok(()),
-                    Err(_) => continue,
-                }
-            }
-            Self::show_msgbox("切换静音失败");
-            Err(AudioError::Failed("set mute failed".into()))
+            vol.SetMute(mute, std::ptr::null()).map_err(|e| {
+                Self::show_msgbox("切换静音失败");
+                AudioError::Failed(e.to_string())
+            })
         }
     }
 

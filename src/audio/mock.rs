@@ -7,12 +7,13 @@ use super::{AudioBackend, AudioDevice, AudioError};
 #[allow(missing_docs)]
 #[derive(Debug, Clone)]
 pub struct MockBackend {
-    pub devices: Vec<AudioDevice>,
-    pub default_id: Option<String>,
-    pub volume: u32,
-    pub mute: bool,
+    pub(crate) devices: Vec<AudioDevice>,
+    pub(crate) default_id: Option<String>,
+    pub(crate) volume: u32,
+    pub(crate) mute: bool,
+    /// When true the next fallible operation returns an error.
     pub fail_next: bool,
-    pub enumerate_count: usize,
+    pub(crate) enumerate_count: usize,
     cached: Option<Vec<AudioDevice>>,
     cache_time: Option<Instant>,
 }
@@ -39,6 +40,11 @@ impl MockBackend {
         None
     }
 
+    fn clear_cache(&mut self) {
+        self.cached = None;
+        self.cache_time = None;
+    }
+
     pub fn set_volume_impl(&mut self, volume: u32) -> Result<(), AudioError> {
         if let Some(e) = self.maybe_fail() {
             return Err(e);
@@ -50,6 +56,9 @@ impl MockBackend {
 
 impl AudioBackend for MockBackend {
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
+        if let Some(e) = self.maybe_fail() {
+            return Err(e);
+        }
         if let Some(cached) = &self.cached {
             if let Some(t) = &self.cache_time {
                 if t.elapsed() < Duration::from_millis(800) {
@@ -57,16 +66,11 @@ impl AudioBackend for MockBackend {
                 }
             }
         }
-        if self.devices.is_empty() {
-            if let Some(c) = &self.cached {
-                return Ok(c.clone());
-            }
-            return Ok(vec![]);
-        }
         self.enumerate_count += 1;
         let v = self.devices.clone();
         self.cached = Some(v.clone());
         self.cache_time = Some(Instant::now());
+        // Return empty when no devices, do not keep old cache — UI should show empty state.
         Ok(v)
     }
 
@@ -79,8 +83,12 @@ impl AudioBackend for MockBackend {
         if let Some(e) = self.maybe_fail() {
             return Err(e);
         }
+        if id.is_empty() {
+            return Err(AudioError::Failed("empty device id".into()));
+        }
         if self.devices.iter().any(|d| d.id == id) {
             self.default_id = Some(id.to_string());
+            self.clear_cache();
             Ok(())
         } else {
             Err(AudioError::Failed(format!("not found: {}", id)))

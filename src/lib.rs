@@ -11,14 +11,14 @@
 
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
-#![allow(unsafe_op_in_unsafe_fn)]
+#![warn(unsafe_op_in_unsafe_fn)]
 
 pub mod app;
-pub mod audio;
+pub(crate) mod audio;
 pub mod config;
-pub mod platform;
+pub(crate) mod platform;
 pub mod prelude;
-pub mod ui;
+pub(crate) mod ui;
 
 //  curated re-exports for external consumers
 pub use config::{AppConfig, Lang};
