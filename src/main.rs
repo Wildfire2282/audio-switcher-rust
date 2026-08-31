@@ -351,7 +351,6 @@ fn main() {
                         );
                         update_tooltip(&tray_wrapper, &backend, &cfg);
                     }
-                    "help" => tray::show_help(&cfg.lang),
                     "about" => tray::show_about(&cfg.lang),
                     "exit" => {
                         #[cfg(windows)]

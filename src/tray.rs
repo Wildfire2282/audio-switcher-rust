@@ -90,13 +90,6 @@ pub fn tr(key: &str, lang: &str) -> String {
                 "Auto Launch".into()
             }
         }
-        "help" => {
-            if zh {
-                "帮助".into()
-            } else {
-                "Help".into()
-            }
-        }
         "about" => {
             if zh {
                 "关于".into()
@@ -127,19 +120,12 @@ pub fn tr(key: &str, lang: &str) -> String {
                 "Please enter integer 1-100".into()
             }
         }
-        "help_text" => {
-            if zh {
-                "Audio Switcher — 托盘音频切换工具\n右键菜单切换设备，中键静音，悬停滚轮调音量。"
-                    .into()
-            } else {
-                "Audio Switcher — Tray audio switcher\nRight-click to switch device, middle-click to mute, hover+wheel to adjust volume.".into()
-            }
-        }
         "about_text" => {
             if zh {
-                "Audio Switcher\n纯 Rust 托盘工具".into()
+                "Audio Switcher — 托盘音频切换工具\n纯 Rust 托盘工具\n\n右键菜单切换设备，中键静音，悬停滚轮调音量。"
+                    .into()
             } else {
-                "Audio Switcher\nPure Rust tray tool".into()
+                "Audio Switcher — Tray audio switcher\nPure Rust tray tool\n\nRight-click to switch device, middle-click to mute, hover+wheel to adjust volume.".into()
             }
         }
         _ => key.to_string(),
@@ -615,7 +601,6 @@ pub fn build_menu(
     let lang_sub =
         Submenu::with_id_and_items("language", "Language", true, &[&lang_zh, &lang_en]).unwrap();
 
-    let help = MenuItem::with_id("help", tr("help", lang), true, None);
     let about = MenuItem::with_id("about", tr("about", lang), true, None);
     let exit = MenuItem::with_id("exit", tr("exit", lang), true, None);
 
@@ -635,7 +620,6 @@ pub fn build_menu(
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&autostart);
     let _ = menu.append(&lang_sub);
-    let _ = menu.append(&help);
     let _ = menu.append(&about);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&exit);
@@ -758,24 +742,6 @@ pub fn open_sound_settings() {
 
 #[cfg(not(windows))]
 pub fn open_sound_settings() {}
-
-#[cfg(windows)]
-pub fn show_help(lang: &str) {
-    unsafe {
-        let txt = tr("help_text", lang);
-        let wide: Vec<u16> = txt.encode_utf16().chain(std::iter::once(0)).collect();
-        let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
-        MessageBoxW(
-            None,
-            PCWSTR(wide.as_ptr()),
-            PCWSTR(title.as_ptr()),
-            MB_OK | MB_ICONINFORMATION,
-        );
-    }
-}
-
-#[cfg(not(windows))]
-pub fn show_help(_lang: &str) {}
 
 #[cfg(windows)]
 pub fn show_about(lang: &str) {
