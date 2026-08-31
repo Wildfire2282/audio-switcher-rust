@@ -24,9 +24,9 @@ unsafe extern "system" fn hook_proc(
         // SAFETY: per Win32 contract l_param points to MSLLHOOKSTRUCT
         let info = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
         let delta = (info.mouseData >> 16) as u16 as i16 as i32;
-        // SeqCst to ensure visibility even if OS dispatches on a different thread.
-        WHEEL_DELTA.fetch_add(delta, Ordering::SeqCst);
-        WHEEL_PENDING.store(true, Ordering::SeqCst);
+        // Release ordering pairs with Acquire in consumer (take_pending/take_delta).
+        WHEEL_DELTA.fetch_add(delta, Ordering::AcqRel);
+        WHEEL_PENDING.store(true, Ordering::Release);
     }
     // SAFETY: CallNextHookEx is always safe to forward.
     unsafe { CallNextHookEx(None, n_code, w_param, l_param) }
@@ -89,17 +89,17 @@ impl Drop for WheelHook {
 
 /// Take and clear the pending flag.
 pub(crate) fn take_pending() -> bool {
-    WHEEL_PENDING.swap(false, Ordering::SeqCst)
+    WHEEL_PENDING.swap(false, Ordering::AcqRel)
 }
 
 /// Peek without clearing.
 pub(crate) fn peek_pending() -> bool {
-    WHEEL_PENDING.load(Ordering::SeqCst)
+    WHEEL_PENDING.load(Ordering::Acquire)
 }
 
 /// Take and clear accumulated delta.
 pub(crate) fn take_delta() -> i32 {
-    WHEEL_DELTA.swap(0, Ordering::SeqCst)
+    WHEEL_DELTA.swap(0, Ordering::AcqRel)
 }
 
 /// Whether the cursor is over the tray icon's rect (with padding).

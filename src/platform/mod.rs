@@ -12,4 +12,5 @@ pub use com::ComGuard;
 pub(crate) use dialog::{prompt_custom_limit, show_autostart_error};
 pub use instance::SingleInstanceGuard;
 
+#[allow(unused_imports)]
 pub(crate) use hook::{cursor_over_tray, peek_pending, take_delta, take_pending};

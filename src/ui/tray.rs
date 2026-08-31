@@ -6,12 +6,16 @@ use crate::ui::icon::make_icon;
 use crate::ui::menu::{build_menu, MenuHandles};
 use crate::ui::tooltip::format_tooltip;
 
+/// Wrapper around `tray-icon`'s `TrayIcon` holding the menu handles.
 pub struct TrayWrapper {
+    /// Underlying tray icon.
     pub tray: TrayIcon,
+    /// Handles to keep the menu alive.
     pub handles: MenuHandles,
 }
 
 impl TrayWrapper {
+    /// Build a new tray icon and menu for the current config/devices.
     pub fn new(
         cfg: &AppConfig,
         devices: &[AudioDevice],

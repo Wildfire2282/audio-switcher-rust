@@ -22,7 +22,12 @@ pub struct AudioDevice {
 pub enum AudioError {
     /// COM / HRESULT failure; `hr` preserved for diagnostics.
     #[error("COM 0x{hr:08X}: {msg}")]
-    Com { hr: i32, msg: String },
+    Com {
+        /// Raw HRESULT value.
+        hr: i32,
+        /// Human-readable message.
+        msg: String,
+    },
 
     /// Generic failure with context.
     #[error("audio failed: {0}")]
@@ -118,12 +123,16 @@ impl Default for AudioSnapshot {
     }
 }
 
+#[allow(missing_docs)]
 #[cfg(test)]
 pub mod mock;
+#[allow(missing_docs)]
 #[cfg(test)]
 pub use mock::MockBackend;
 
+/// Real Windows WASAPI backend.
 pub mod real;
+/// Real Windows WASAPI backend.
 pub use real::RealBackend;
 
 #[cfg(test)]

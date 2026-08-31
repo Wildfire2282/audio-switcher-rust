@@ -134,6 +134,7 @@ impl Drop for SuppressGuard {
     }
 }
 
+/// Returns and clears the device-change flag set by `IMMNotificationClient`.
 #[cfg(windows)]
 pub fn take_device_changed() -> bool {
     DEVICE_CHANGED.swap(false, AtomicOrdering::Relaxed)
@@ -215,6 +216,7 @@ fn register_notification_client() {
     }
 }
 
+/// Real Windows WASAPI backend.
 #[cfg(windows)]
 pub struct RealBackend {
     cached: Option<Vec<AudioDevice>>,
@@ -225,6 +227,7 @@ pub struct RealBackend {
 
 #[cfg(windows)]
 impl RealBackend {
+    /// Create a backend and register the endpoint notification client once.
     pub fn new() -> Self {
         let s = Self { cached: None, cache_time: None, cached_enumerator: None };
         // register once per process
@@ -235,6 +238,7 @@ impl RealBackend {
         s
     }
 
+    /// Invalidate the device enumeration cache.
     pub fn clear_cache(&mut self) {
         self.cached = None;
         self.cache_time = None;
@@ -387,6 +391,7 @@ impl RealBackend {
     }
 
     #[allow(dead_code)]
+    /// Polls the notification flag and clears cache if a device changed.
     pub fn poll_device_changed(&mut self) -> bool {
         if take_device_changed() {
             self.clear_cache();
@@ -576,6 +581,7 @@ impl AudioBackend for RealBackend {
 
 #[cfg(not(windows))]
 use windows::Win32::Foundation::HANDLE;
+/// Real backend stub for non-Windows (compilation only).
 #[cfg(not(windows))]
 pub struct RealBackend {
     cached: Option<Vec<AudioDevice>>,
@@ -583,22 +589,28 @@ pub struct RealBackend {
 }
 #[cfg(not(windows))]
 impl RealBackend {
+    /// Create a stub backend.
     pub fn new() -> Self {
         Self { cached: None, cache_time: None }
     }
+    /// Invalidate cache (no-op on non-Windows).
     pub fn clear_cache(&mut self) {
         self.cached = None;
         self.cache_time = None;
     }
+    /// Poll device change — always false on non-Windows.
     pub fn poll_device_changed(&mut self) -> bool {
         false
     }
+    /// Fetch snapshot — default on non-Windows.
     pub fn fetch_snapshot(&mut self) -> AudioSnapshot {
         AudioSnapshot::default()
     }
+    /// Fetch clamped snapshot — default on non-Windows.
     pub fn fetch_snapshot_clamped(&mut self, _cfg: &AppConfig) -> AudioSnapshot {
         AudioSnapshot::default()
     }
+    /// Get volume and mute — returns `(50, false)` on non-Windows.
     pub fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
         Ok((50, false))
     }
@@ -630,10 +642,12 @@ impl AudioBackend for RealBackend {
         Ok(())
     }
 }
+/// Stub — always false on non-Windows.
 #[cfg(not(windows))]
 pub fn take_device_changed() -> bool {
     false
 }
+/// Stub — null handle on non-Windows.
 #[cfg(not(windows))]
 pub fn device_event_handle() -> windows::Win32::Foundation::HANDLE {
     windows::Win32::Foundation::HANDLE::default()

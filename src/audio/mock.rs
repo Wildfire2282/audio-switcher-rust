@@ -4,6 +4,7 @@ use crate::config::{clamp_volume, AppConfig};
 
 use super::{AudioBackend, AudioDevice, AudioError};
 
+#[allow(missing_docs)]
 #[derive(Debug, Clone)]
 pub struct MockBackend {
     pub devices: Vec<AudioDevice>,

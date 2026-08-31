@@ -34,7 +34,6 @@ pub(crate) fn show_autostart_error() {
 pub(crate) fn show_autostart_error() {}
 
 #[cfg(windows)]
-#[allow(dead_code)]
 pub(crate) fn show_msgbox(msg: &str) {
     unsafe {
         let wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
@@ -254,12 +253,5 @@ pub(crate) fn prompt_custom_limit(lang: Lang) -> Option<u32> {
 
 #[cfg(not(windows))]
 pub(crate) fn prompt_custom_limit(_lang: Lang) -> Option<u32> {
-    None
-}
-
-/// Backwards-compatible helper for callers that still pass `&str`.
-#[cfg(not(windows))]
-#[allow(dead_code)]
-pub(crate) fn prompt_custom_limit_str(_lang: &str) -> Option<u32> {
     None
 }

@@ -10,6 +10,18 @@ use crate::platform::hook;
 use crate::ui::{format_tooltip, TrayWrapper, WheelState};
 use handler::MenuAction;
 
+fn ensure_autostart(cfg: &AppConfig) {
+    if cfg.autostart && !crate::platform::is_autostart_enabled() {
+        std::thread::spawn(|| {
+            let _ = crate::platform::set_autostart(true);
+        });
+    }
+}
+
+fn instant_ago(d: Duration) -> Instant {
+    Instant::now().checked_sub(d).unwrap_or_else(Instant::now)
+}
+
 /// App owns all runtime state. Generic over [`AudioBackend`] for test injection.
 pub struct App<B: AudioBackend = RealBackend> {
     cfg: AppConfig,
@@ -23,6 +35,7 @@ pub struct App<B: AudioBackend = RealBackend> {
     last_devices_rebuild: Instant,
     hook: Option<hook::WheelHook>,
     hook_install_at: Instant,
+    should_exit: bool,
     _com: crate::platform::ComGuard,
 }
 
@@ -72,30 +85,21 @@ impl AppBuilder {
         ));
         tray.update_icon(snap.mute);
         // Autostart side-effect only when config came from disk (not injected in tests).
-        if cfg.autostart && !crate::platform::is_autostart_enabled() {
-            // Fire-and-forget, mirroring App::with_backend behaviour.
-            std::thread::spawn(|| {
-                let _ = crate::platform::set_autostart(true);
-            });
-        }
+        // Reuse the canonical helper to avoid duplication with with_backend.
+        ensure_autostart(&cfg);
         App {
             cfg,
             backend,
             tray,
             wheel: WheelState::new(),
             is_hover: false,
-            last_hover: Instant::now()
-                .checked_sub(Duration::from_secs(10))
-                .unwrap_or_else(Instant::now),
-            last_cursor_check: Instant::now()
-                .checked_sub(Duration::from_secs(1))
-                .unwrap_or_else(Instant::now),
+            last_hover: instant_ago(Duration::from_secs(10)),
+            last_cursor_check: instant_ago(Duration::from_secs(1)),
             last_cursor_over: false,
-            last_devices_rebuild: Instant::now()
-                .checked_sub(Duration::from_secs(1))
-                .unwrap_or_else(Instant::now),
+            last_devices_rebuild: instant_ago(Duration::from_secs(1)),
             hook: None,
             hook_install_at: Instant::now() + Duration::from_millis(180),
+            should_exit: false,
             _com: self.com,
         }
     }
@@ -112,12 +116,7 @@ impl<B: AudioBackend> App<B> {
     /// Create an `App` with an injected backend.
     pub fn with_backend(com: crate::platform::ComGuard, mut backend: B) -> Self {
         let cfg = AppConfig::load();
-        let autostart = cfg.autostart;
-        std::thread::spawn(move || {
-            if autostart && !crate::platform::is_autostart_enabled() {
-                let _ = crate::platform::set_autostart(true);
-            }
-        });
+        ensure_autostart(&cfg);
         let mut tray = TrayWrapper::new(&cfg, &[], None, false);
         let snap = backend.fetch_snapshot_clamped(&cfg);
         let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
@@ -135,29 +134,35 @@ impl<B: AudioBackend> App<B> {
             tray,
             wheel: WheelState::new(),
             is_hover: false,
-            // checked_sub: Instant subtraction panics on underflow if clock jumps; use saturating fallback
-            last_hover: Instant::now()
-                .checked_sub(Duration::from_secs(10))
-                .unwrap_or_else(Instant::now),
-            last_cursor_check: Instant::now()
-                .checked_sub(Duration::from_secs(1))
-                .unwrap_or_else(Instant::now),
+            last_hover: instant_ago(Duration::from_secs(10)),
+            last_cursor_check: instant_ago(Duration::from_secs(1)),
             last_cursor_over: false,
-            last_devices_rebuild: Instant::now()
-                .checked_sub(Duration::from_secs(1))
-                .unwrap_or_else(Instant::now),
+            last_devices_rebuild: instant_ago(Duration::from_secs(1)),
             hook: None,
             hook_install_at: Instant::now() + Duration::from_millis(180),
+            should_exit: false,
             _com: com,
         }
     }
 
+    /// Returns true when an exit has been requested via the tray menu.
+    #[must_use]
+    pub fn should_exit(&self) -> bool {
+        self.should_exit
+    }
+
     fn refresh_ui(&mut self) {
-        let devs = self.backend.enumerate_devices().unwrap_or_default();
-        let def = self.backend.get_default_device();
-        let mute = self.backend.get_mute().unwrap_or(false);
-        self.tray.rebuild_menu(&self.cfg, &devs, def.as_ref().map(|d| d.id.as_str()), mute);
-        self.update_tooltip_and_icon();
+        // Use batch snapshot to avoid 3 separate COM round-trips.
+        let snap = self.backend.fetch_snapshot_clamped(&self.cfg);
+        let def_id = snap.default_device.as_ref().map(|d| d.id.as_str());
+        self.tray.rebuild_menu(&self.cfg, &snap.devices, def_id, snap.mute);
+        self.tray.update_tooltip(format_tooltip(
+            snap.default_device.as_ref(),
+            snap.volume,
+            snap.mute,
+            self.cfg.lang,
+        ));
+        self.tray.update_icon(snap.mute);
     }
 
     fn update_tooltip_and_icon(&self) {
@@ -219,14 +224,8 @@ impl<B: AudioBackend> App<B> {
             MenuAction::WheelAccel => {
                 self.cfg.wheel_acceleration = !self.cfg.wheel_acceleration;
                 let _ = self.cfg.save();
-                let devs = self.backend.enumerate_devices().unwrap_or_default();
-                let def = self.backend.get_default_device();
-                self.tray.rebuild_menu(
-                    &self.cfg,
-                    &devs,
-                    def.as_ref().map(|d| d.id.as_str()),
-                    self.backend.get_mute().unwrap_or(false),
-                );
+                // Rebuild menu only — reuse snapshot path to keep COM calls batched.
+                self.refresh_ui();
             }
             MenuAction::OpenMixer => crate::ui::open_volume_mixer(),
             MenuAction::OpenSound => crate::ui::open_sound_settings(),
@@ -254,7 +253,14 @@ impl<B: AudioBackend> App<B> {
                     None,
                 );
             }
-            MenuAction::Exit => std::process::exit(0),
+            MenuAction::Exit => {
+                self.should_exit = true;
+                #[cfg(windows)]
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::PostQuitMessage;
+                    PostQuitMessage(0);
+                }
+            }
             MenuAction::Unknown(_) => {}
         }
     }
@@ -357,8 +363,9 @@ impl<B: AudioBackend> App<B> {
         let step = self.wheel.push(Instant::now(), self.cfg.wheel_acceleration, delta);
         let total = WheelState::total_step(delta, step);
         if let Ok(vol) = self.backend.get_volume() {
-            // vol is 0..=100; widen infallibly, clamp then cast_unsigned keeps within 0..=100
-            let new_vol = (i32::try_from(vol).unwrap_or(0) + total).clamp(0, 100).cast_unsigned();
+            // vol is 0..=100; widen infallibly, clamp then convert — MSRV 1.75 has no cast_unsigned.
+            let new_vol =
+                u32::try_from((i32::try_from(vol).unwrap_or(0) + total).clamp(0, 100)).unwrap_or(0);
             let clamped = crate::config::clamp_volume(new_vol, &self.cfg);
             let _ = self.backend.set_volume(clamped);
             self.update_tooltip_and_icon();
@@ -377,6 +384,7 @@ impl<B: AudioBackend> App<B> {
         self.refresh_ui();
     }
     // `wait` has no self data; make it an associated function (fixes clippy::unused_self)
+    /// Wait for input with adaptive timeout based on wheel pending state.
     fn wait() {
         #[cfg(windows)]
         unsafe {
@@ -392,13 +400,20 @@ impl<B: AudioBackend> App<B> {
         std::thread::sleep(Duration::from_millis(if hook::peek_pending() { 8 } else { 24 }));
     }
 
+    /// Run the message loop until `Exit` is requested.
     pub fn run(mut self) {
         loop {
             Self::pump_messages();
+            if self.should_exit {
+                break;
+            }
             self.maybe_install_hook();
             self.poll_tray();
             self.poll_cursor();
             self.poll_menu();
+            if self.should_exit {
+                break;
+            }
             self.poll_wheel();
             self.poll_devices();
             Self::wait();

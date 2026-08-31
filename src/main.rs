@@ -1,3 +1,4 @@
+//! Binary entry — minimal `main` per `proj-lib-main-split`.
 #![windows_subsystem = "windows"]
 use audio_switcher_rust::platform::{ComGuard, SingleInstanceGuard};
 

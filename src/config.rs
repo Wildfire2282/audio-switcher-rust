@@ -32,8 +32,10 @@ static CONFIG_PATH_CACHE: LazyLock<PathBuf> = LazyLock::new(|| {
 /// UI language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Lang {
+    /// Chinese.
     #[default]
     Zh,
+    /// English.
     En,
 }
 
@@ -214,15 +216,36 @@ impl AppConfig {
                     cfg
                 }
                 Err(_) => {
+                    // Corrupted file — back up original before overwriting.
+                    let backup = {
+                        let nanos = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_nanos())
+                            .unwrap_or(0);
+                        let pid = std::process::id();
+                        path.with_file_name(format!(
+                            "{}.bak.{}-{}",
+                            path.file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "config.json".into()),
+                            nanos,
+                            pid
+                        ))
+                    };
+                    let _ = std::fs::write(&backup, &bytes);
                     let def = Self::default();
                     let _ = def.save_to(path);
                     def
                 }
             },
-            Err(_) => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let def = Self::default();
                 let _ = def.save_to(path);
                 def
+            }
+            Err(_) => {
+                // Transient IO error (e.g. permission) — don't clobber file, return in-memory default.
+                Self::default()
             }
         }
     }
@@ -260,7 +283,8 @@ impl AppConfig {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
-            path.with_file_name(format!("{file_name}.tmp.{nanos}-{suffix}"))
+            let pid = std::process::id();
+            path.with_file_name(format!("{file_name}.tmp.{pid}-{nanos}-{suffix}"))
         };
         std::fs::write(&tmp_path, json.as_bytes())?;
         if std::fs::rename(&tmp_path, path).is_ok() {

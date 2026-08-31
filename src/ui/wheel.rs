@@ -47,14 +47,16 @@ impl WheelState {
     #[must_use]
     pub fn total_step(delta: i32, step_per_tick: u32) -> i32 {
         let ticks = delta / 120;
+        // step_per_tick is 1,2,5 — lossless for i32 on MSRV 1.75 (no cast_signed yet).
+        let step = i32::try_from(step_per_tick).unwrap_or(1);
         if ticks == 0 {
             if delta > 0 {
-                step_per_tick.cast_signed()
+                step
             } else {
-                -step_per_tick.cast_signed()
+                -step
             }
         } else {
-            ticks * step_per_tick.cast_signed()
+            ticks * step
         }
     }
 
@@ -78,10 +80,6 @@ pub fn calc_step(count: usize, min_interval_ms: u128, wheel_accel: bool) -> u32 
         1
     }
 }
-
-// backwards compat alias
-#[allow(unused_imports)]
-pub use calc_step as calc_wheel_step;
 
 #[cfg(test)]
 mod tests {
