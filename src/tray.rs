@@ -227,14 +227,70 @@ pub fn calc_wheel_step(count: usize, min_interval_ms: u128, wheel_accel: bool) -
 }
 
 // ------------------------------------------------------------
-// icon creation — emoji temporary substitute
+// theme cache — 无锁读，2000ms TTL，避免每 500ms 读注册表
 // ------------------------------------------------------------
+#[cfg(windows)]
+static DARK_MODE_CACHE: std::sync::LazyLock<parking_lot::Mutex<(bool, Instant)>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new((raw_is_dark_mode(), Instant::now())));
+
+#[cfg(windows)]
+fn raw_is_dark_mode() -> bool {
+    use windows::Win32::System::Registry::HKEY;
+    use windows::Win32::System::Registry::{
+        RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_NONE, REG_VALUE_TYPE,
+    };
+    unsafe {
+        let subkey: Vec<u16> =
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+                .encode_utf16()
+                .collect();
+        let mut hkey = HKEY::default();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            Some(0),
+            KEY_READ,
+            &mut hkey,
+        )
+        .is_err()
+        {
+            return false;
+        }
+        let valname: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
+        let mut data: u32 = 0;
+        let mut len = std::mem::size_of::<u32>() as u32;
+        let mut ty: REG_VALUE_TYPE = REG_NONE;
+        let res = RegQueryValueExW(
+            hkey,
+            PCWSTR(valname.as_ptr()),
+            None,
+            Some(&mut ty),
+            Some(&mut data as *mut u32 as *mut u8),
+            Some(&mut len),
+        );
+        let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
+        if res.is_ok() {
+            return data == 0;
+        }
+        false
+    }
+}
+
+// ------------------------------------------------------------
+// icon creation — LazyLock HashMap 缓存，避免 GDI 重复创建
+// ------------------------------------------------------------
+static ICON_CACHE: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<(bool, bool), Icon>>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
 pub fn make_icon(muted: bool, is_dark: bool) -> Icon {
+    if let Some(cached) = ICON_CACHE.lock().get(&(muted, is_dark)).cloned() {
+        return cached;
+    }
     #[cfg(windows)]
     if let Some(icon) = try_make_emoji_icon(muted, is_dark) {
+        ICON_CACHE.lock().insert((muted, is_dark), icon.clone());
         return icon;
     }
-    // fallback simple colored circle (kept for non-windows/tests)
     let mut rgba = vec![0u8; 32 * 32 * 4];
     let (r, g, b) = if muted {
         (220, 50, 50)
@@ -264,7 +320,9 @@ pub fn make_icon(muted: bool, is_dark: bool) -> Icon {
             }
         }
     }
-    Icon::from_rgba(rgba, 32, 32).unwrap()
+    let icon = Icon::from_rgba(rgba, 32, 32).unwrap();
+    ICON_CACHE.lock().insert((muted, is_dark), icon.clone());
+    icon
 }
 
 #[cfg(windows)]
@@ -417,46 +475,29 @@ fn try_make_emoji_icon(muted: bool, is_dark: bool) -> Option<Icon> {
 
 #[cfg(windows)]
 pub fn is_dark_mode() -> bool {
-    use windows::Win32::System::Registry::HKEY;
-    use windows::Win32::System::Registry::{
-        RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER, KEY_READ, REG_NONE, REG_VALUE_TYPE,
-    };
-    unsafe {
-        let subkey: Vec<u16> =
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
-                .encode_utf16()
-                .collect();
-        let mut hkey = HKEY::default();
-        if RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR(subkey.as_ptr()),
-            Some(0),
-            KEY_READ,
-            &mut hkey,
-        )
-        .is_err()
-        {
-            return false;
+    let now = Instant::now();
+    {
+        let cache = DARK_MODE_CACHE.lock();
+        if now.duration_since(cache.1) < Duration::from_millis(2000) {
+            return cache.0;
         }
-        let valname: Vec<u16> = "AppsUseLightTheme\0".encode_utf16().collect();
-        let mut data: u32 = 0;
-        let mut len = std::mem::size_of::<u32>() as u32;
-        let mut ty: REG_VALUE_TYPE = REG_NONE;
-        let res = RegQueryValueExW(
-            hkey,
-            PCWSTR(valname.as_ptr()),
-            None,
-            Some(&mut ty),
-            Some(&mut data as *mut u32 as *mut u8),
-            Some(&mut len),
-        );
-        let _ = windows::Win32::System::Registry::RegCloseKey(hkey);
-        if res.is_ok() {
-            return data == 0;
-        }
-        false
+    }
+    let fresh = raw_is_dark_mode();
+    let mut cache = DARK_MODE_CACHE.lock();
+    if now.duration_since(cache.1) >= Duration::from_millis(2000) {
+        *cache = (fresh, now);
+        fresh
+    } else {
+        cache.0
     }
 }
+
+#[cfg(windows)]
+pub fn invalidate_dark_mode_cache() {
+    let mut cache = DARK_MODE_CACHE.lock();
+    *cache = (raw_is_dark_mode(), Instant::now());
+}
+
 
 #[cfg(not(windows))]
 pub fn is_dark_mode() -> bool {

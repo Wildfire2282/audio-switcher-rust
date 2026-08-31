@@ -34,6 +34,21 @@ pub trait AudioBackend {
     fn clamp_volume_if_needed(&mut self, cfg: &AppConfig) -> Result<(), AudioError>;
 }
 
+/// 快照：一次性获取枚举/默认/音量/静音，避免多次 CoCreateInstance
+#[derive(Debug, Clone)]
+pub struct AudioSnapshot {
+    pub devices: Vec<AudioDevice>,
+    pub default_device: Option<AudioDevice>,
+    pub volume: u32,
+    pub mute: bool,
+}
+
+impl Default for AudioSnapshot {
+    fn default() -> Self {
+        Self { devices: Vec::new(), default_device: None, volume: 50, mute: false }
+    }
+}
+
 // ------------------------------------------------------------
 // MockBackend for tests
 // ------------------------------------------------------------
@@ -157,7 +172,8 @@ impl AudioBackend for MockBackend {
 #[cfg(windows)]
 pub mod real {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+    use std::sync::LazyLock;
     use windows::core::{Interface, GUID, HRESULT, PCWSTR};
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
@@ -284,7 +300,7 @@ pub mod real {
     static SUPPRESS_NOTIFY: AtomicBool = AtomicBool::new(false);
 
     pub fn take_device_changed() -> bool {
-        DEVICE_CHANGED.swap(false, Ordering::SeqCst)
+        DEVICE_CHANGED.swap(false, AtomicOrdering::Relaxed)
     }
 
     #[windows_core::implement(windows::Win32::Media::Audio::IMMNotificationClient)]
@@ -296,15 +312,15 @@ pub mod real {
             _device_id: &PCWSTR,
             _new_state: windows::Win32::Media::Audio::DEVICE_STATE,
         ) -> windows::core::Result<()> {
-            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
             Ok(())
         }
         fn OnDeviceAdded(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
-            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
             Ok(())
         }
         fn OnDeviceRemoved(&self, _device_id: &PCWSTR) -> windows::core::Result<()> {
-            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
             Ok(())
         }
         fn OnDefaultDeviceChanged(
@@ -313,7 +329,7 @@ pub mod real {
             _role: windows::Win32::Media::Audio::ERole,
             _device_id: &PCWSTR,
         ) -> windows::core::Result<()> {
-            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
             Ok(())
         }
         fn OnPropertyValueChanged(
@@ -321,10 +337,10 @@ pub mod real {
             _device_id: &PCWSTR,
             _key: &windows::Win32::Foundation::PROPERTYKEY,
         ) -> windows::core::Result<()> {
-            if SUPPRESS_NOTIFY.load(Ordering::SeqCst) {
+            if SUPPRESS_NOTIFY.load(AtomicOrdering::Relaxed) {
                 return Ok(());
             }
-            DEVICE_CHANGED.store(true, Ordering::SeqCst);
+            DEVICE_CHANGED.store(true, AtomicOrdering::Relaxed);
             Ok(())
         }
     }
@@ -345,6 +361,8 @@ pub mod real {
     pub struct RealBackend {
         cached: Option<Vec<AudioDevice>>,
         cache_time: Option<Instant>,
+        // 复用 enumerator / endpoint 避免重复 CoCreateInstance (启动阶段批量查询)
+        cached_enumerator: Option<windows::Win32::Media::Audio::IMMDeviceEnumerator>,
     }
 
     impl RealBackend {
@@ -352,10 +370,11 @@ pub mod real {
             let s = Self {
                 cached: None,
                 cache_time: None,
+                cached_enumerator: None,
             };
             // register once per process
             static REGISTERED: AtomicBool = AtomicBool::new(false);
-            if !REGISTERED.swap(true, Ordering::SeqCst) {
+            if !REGISTERED.swap(true, AtomicOrdering::SeqCst) {
                 register_notification_client();
             }
             s
@@ -364,6 +383,155 @@ pub mod real {
         pub fn clear_cache(&mut self) {
             self.cached = None;
             self.cache_time = None;
+            // enumerator 保持可用，无需清除；仅设备列表缓存失效
+        }
+
+        /// 获取或创建缓存的 IMMDeviceEnumerator，减少 CoCreateInstance 次数
+        fn enumerator_mut(&mut self) -> windows::core::Result<windows::Win32::Media::Audio::IMMDeviceEnumerator> {
+            if let Some(e) = &self.cached_enumerator {
+                return Ok(e.clone());
+            }
+            let e = Self::get_enumerator()?;
+            self.cached_enumerator = Some(e.clone());
+            Ok(e)
+        }
+
+        #[allow(dead_code)]
+        /// 批量获取启动所需状态：设备列表 + 默认设备 + 音量 + 静音，共享同一个 enumerator/endpoint
+        pub fn fetch_snapshot(&mut self) -> AudioSnapshot {
+            let mut snap = AudioSnapshot::default();
+            // 尽量用缓存的 enumerator
+            let enumerator = match self.enumerator_mut() {
+                Ok(e) => e,
+                Err(_) => return snap,
+            };
+            // devices (带 3000ms 缓存，通知已清除缓存，延长命中)
+            if let Ok(devs) = self.enumerate_devices_inner(&enumerator) {
+                snap.devices = devs;
+            }
+            // default + volume/mute 用同一个 endpoint
+            unsafe {
+                if let Ok(dev) = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) {
+                    if let Ok(id) = Self::device_id(&dev) {
+                        let name = Self::device_friendly_name(&dev);
+                        snap.default_device = Some(AudioDevice { id, name });
+                    }
+                    if let Ok(vol) = dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) {
+                        if let Ok(scalar) = vol.GetMasterVolumeLevelScalar() {
+                            snap.volume = (scalar * 100.0).round() as u32;
+                        }
+                        if let Ok(m) = vol.GetMute() {
+                            snap.mute = m.as_bool();
+                        }
+                    }
+                }
+            }
+            snap
+        }
+
+        /// 合并 clamp 的快照：内部一次性处理限幅，避免二次 get_volume_and_mute
+        pub fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot {
+            let mut snap = AudioSnapshot::default();
+            let enumerator = match self.enumerator_mut() {
+                Ok(e) => e,
+                Err(_) => return snap,
+            };
+            if let Ok(devs) = self.enumerate_devices_inner(&enumerator) {
+                snap.devices = devs;
+            }
+            unsafe {
+                if let Ok(dev) = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) {
+                    if let Ok(id) = Self::device_id(&dev) {
+                        let name = Self::device_friendly_name(&dev);
+                        snap.default_device = Some(AudioDevice { id, name });
+                    }
+                    if let Ok(vol) = dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) {
+                        if let Ok(scalar) = vol.GetMasterVolumeLevelScalar() {
+                            snap.volume = (scalar * 100.0).round() as u32;
+                        }
+                        if let Ok(m) = vol.GetMute() {
+                            snap.mute = m.as_bool();
+                        }
+                        // 一次性限幅，避免外部二次 get_volume_and_mute
+                        if cfg.volume_limit_enabled {
+                            let clamped = clamp_volume(snap.volume, cfg);
+                            if clamped != snap.volume {
+                                SUPPRESS_NOTIFY.store(true, AtomicOrdering::Relaxed);
+                                let v = clamped.min(100) as f32 / 100.0;
+                                let _ = vol.SetMasterVolumeLevelScalar(v, std::ptr::null());
+                                SUPPRESS_NOTIFY.store(false, AtomicOrdering::Relaxed);
+                                snap.volume = clamped;
+                            }
+                        }
+                    }
+                }
+            }
+            snap
+        }
+
+        /// 一次 endpoint 激活同时获取音量+静音，减少一次 CoCreateInstance+Activate
+        /// 复用 cached_enumerator 而非每次新建
+        pub fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
+            unsafe {
+                let enumerator = if let Some(e) = &self.cached_enumerator {
+                    e.clone()
+                } else {
+                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?
+                };
+                let dev = enumerator
+                    .GetDefaultAudioEndpoint(eRender, eMultimedia)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let vol: IAudioEndpointVolume = dev
+                    .Activate(CLSCTX_ALL, None)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let scalar = vol
+                    .GetMasterVolumeLevelScalar()
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let m = vol.GetMute().map_err(|e| AudioError::Com(e.to_string()))?;
+                Ok(((scalar * 100.0).round() as u32, m.as_bool()))
+            }
+        }
+
+        fn enumerate_devices_inner(
+            &mut self,
+            enumerator: &windows::Win32::Media::Audio::IMMDeviceEnumerator,
+        ) -> Result<Vec<AudioDevice>, AudioError> {
+            if take_device_changed() {
+                self.clear_cache();
+            }
+            if let Some(cached) = &self.cached {
+                if let Some(t) = &self.cache_time {
+                    if t.elapsed() < Duration::from_millis(3000) {
+                        return Ok(cached.clone());
+                    }
+                }
+            }
+            unsafe {
+                let collection: IMMDeviceCollection = enumerator
+                    .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let count = collection
+                    .GetCount()
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
+                let mut devices = Vec::new();
+                for i in 0..count {
+                    if let Ok(dev) = collection.Item(i) {
+                        if let Ok(id) = Self::device_id(&dev) {
+                            let name = Self::device_friendly_name(&dev);
+                            devices.push(AudioDevice { id, name });
+                        }
+                    }
+                }
+                if devices.is_empty() {
+                    if let Some(c) = &self.cached {
+                        return Ok(c.clone());
+                    }
+                    return Ok(vec![]);
+                }
+                self.cached = Some(devices.clone());
+                self.cache_time = Some(Instant::now());
+                Ok(devices)
+            }
         }
 
         pub fn poll_device_changed(&mut self) -> bool {
@@ -438,50 +606,19 @@ pub mod real {
 
     impl AudioBackend for RealBackend {
         fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
-            // if notification flagged, cache already cleared via poll, but also handle here
-            if take_device_changed() {
-                self.clear_cache();
-            }
-            if let Some(cached) = &self.cached {
-                if let Some(t) = &self.cache_time {
-                    if t.elapsed() < Duration::from_millis(800) {
-                        return Ok(cached.clone());
-                    }
-                }
-            }
-            unsafe {
-                let enumerator =
-                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
-                let collection: IMMDeviceCollection = enumerator
-                    .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
-                    .map_err(|e| AudioError::Com(e.to_string()))?;
-                let count = collection
-                    .GetCount()
-                    .map_err(|e| AudioError::Com(e.to_string()))?;
-                let mut devices = Vec::new();
-                for i in 0..count {
-                    if let Ok(dev) = collection.Item(i) {
-                        if let Ok(id) = Self::device_id(&dev) {
-                            let name = Self::device_friendly_name(&dev);
-                            devices.push(AudioDevice { id, name });
-                        }
-                    }
-                }
-                if devices.is_empty() {
-                    if let Some(c) = &self.cached {
-                        return Ok(c.clone());
-                    }
-                    return Ok(vec![]);
-                }
-                self.cached = Some(devices.clone());
-                self.cache_time = Some(Instant::now());
-                Ok(devices)
-            }
+            let enumerator = self
+                .enumerator_mut()
+                .map_err(|e| AudioError::Com(e.to_string()))?;
+            self.enumerate_devices_inner(&enumerator)
         }
 
         fn get_default_device(&self) -> Option<AudioDevice> {
             unsafe {
-                let enumerator = Self::get_enumerator().ok()?;
+                let enumerator = if let Some(e) = &self.cached_enumerator {
+                    e.clone()
+                } else {
+                    Self::get_enumerator().ok()?
+                };
                 let dev = enumerator
                     .GetDefaultAudioEndpoint(eRender, eMultimedia)
                     .ok()?;
@@ -505,27 +642,15 @@ pub mod real {
         }
 
         fn get_volume(&self) -> Result<u32, AudioError> {
-            unsafe {
-                let enumerator =
-                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
-                let dev = enumerator
-                    .GetDefaultAudioEndpoint(eRender, eMultimedia)
-                    .map_err(|e| AudioError::Com(e.to_string()))?;
-                let vol: IAudioEndpointVolume = dev
-                    .Activate(CLSCTX_ALL, None)
-                    .map_err(|e| AudioError::Com(e.to_string()))?;
-                let scalar = vol
-                    .GetMasterVolumeLevelScalar()
-                    .map_err(|e| AudioError::Com(e.to_string()))?;
-                Ok((scalar * 100.0).round() as u32)
-            }
+            self.get_volume_and_mute().map(|(v, _)| v)
         }
 
         fn set_volume(&mut self, volume: u32) -> Result<(), AudioError> {
             let v = volume.min(100) as f32 / 100.0;
             unsafe {
-                let enumerator =
-                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
+                let enumerator = self
+                    .enumerator_mut()
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
                 let dev = enumerator
                     .GetDefaultAudioEndpoint(eRender, eMultimedia)
                     .map_err(|e| AudioError::Com(e.to_string()))?;
@@ -548,24 +673,14 @@ pub mod real {
         }
 
         fn get_mute(&self) -> Result<bool, AudioError> {
-            unsafe {
-                let enumerator =
-                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
-                let dev = enumerator
-                    .GetDefaultAudioEndpoint(eRender, eMultimedia)
-                    .map_err(|e| AudioError::Com(e.to_string()))?;
-                let vol: IAudioEndpointVolume = dev
-                    .Activate(CLSCTX_ALL, None)
-                    .map_err(|e| AudioError::Com(e.to_string()))?;
-                let m = vol.GetMute().map_err(|e| AudioError::Com(e.to_string()))?;
-                Ok(m.as_bool())
-            }
+            self.get_volume_and_mute().map(|(_, m)| m)
         }
 
         fn set_mute(&mut self, mute: bool) -> Result<(), AudioError> {
             unsafe {
-                let enumerator =
-                    Self::get_enumerator().map_err(|e| AudioError::Com(e.to_string()))?;
+                let enumerator = self
+                    .enumerator_mut()
+                    .map_err(|e| AudioError::Com(e.to_string()))?;
                 let dev = enumerator
                     .GetDefaultAudioEndpoint(eRender, eMultimedia)
                     .map_err(|e| AudioError::Com(e.to_string()))?;
@@ -587,12 +702,13 @@ pub mod real {
             if !cfg.volume_limit_enabled {
                 return Ok(());
             }
-            let vol = self.get_volume()?;
+            // 复用一次激活同时取音量，减少 CoCreateInstance
+            let (vol, _) = self.get_volume_and_mute()?;
             let clamped = clamp_volume(vol, cfg);
             if clamped != vol {
-                SUPPRESS_NOTIFY.store(true, Ordering::SeqCst);
+                SUPPRESS_NOTIFY.store(true, AtomicOrdering::Relaxed);
                 let r = self.set_volume(clamped);
-                SUPPRESS_NOTIFY.store(false, Ordering::SeqCst);
+                SUPPRESS_NOTIFY.store(false, AtomicOrdering::Relaxed);
                 return r;
             }
             Ok(())
@@ -603,6 +719,7 @@ pub mod real {
 #[cfg(not(windows))]
 pub mod real {
     use super::*;
+    use windows::Win32::Foundation::HANDLE;
     pub struct RealBackend {
         cached: Option<Vec<AudioDevice>>,
         cache_time: Option<Instant>,
@@ -620,6 +737,15 @@ pub mod real {
         }
         pub fn poll_device_changed(&mut self) -> bool {
             false
+        }
+        pub fn fetch_snapshot(&mut self) -> AudioSnapshot {
+            AudioSnapshot::default()
+        }
+        pub fn fetch_snapshot_clamped(&mut self, _cfg: &AppConfig) -> AudioSnapshot {
+            AudioSnapshot::default()
+        }
+        pub fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
+            Ok((50, false))
         }
     }
     impl AudioBackend for RealBackend {
@@ -650,6 +776,9 @@ pub mod real {
     }
     pub fn take_device_changed() -> bool {
         false
+    }
+    pub fn device_event_handle() -> windows::Win32::Foundation::HANDLE {
+        windows::Win32::Foundation::HANDLE::default()
     }
 }
 

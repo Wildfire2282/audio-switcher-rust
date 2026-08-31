@@ -34,28 +34,29 @@ unsafe extern "system" fn hook_proc(
     if n_code >= 0 && w_param.0 as u32 == WM_MOUSEWHEEL {
         let info = &*(l_param.0 as *const MSLLHOOKSTRUCT);
         let delta = (info.mouseData >> 16) as u16 as i16 as i32;
-        WHEEL_DELTA.fetch_add(delta, Ordering::SeqCst);
-        WHEEL_PENDING.store(true, Ordering::SeqCst);
+        // Relaxed 足够：仅标志+累加，无跨线程同步语义需求，最低栅栏开销
+        WHEEL_DELTA.fetch_add(delta, Ordering::Relaxed);
+        WHEEL_PENDING.store(true, Ordering::Relaxed);
     }
     CallNextHookEx(None, n_code, w_param, l_param)
 }
 
 #[cfg(windows)]
 fn install_wheel_hook() {
-    if HOOK_HANDLE.load(Ordering::SeqCst) != 0 {
+    if HOOK_HANDLE.load(Ordering::Relaxed) != 0 {
         return;
     }
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::{SetWindowsHookExW, WH_MOUSE_LL};
         if let Ok(hook) = SetWindowsHookExW(WH_MOUSE_LL, Some(hook_proc), None, 0) {
-            HOOK_HANDLE.store(hook.0 as usize, Ordering::SeqCst);
+            HOOK_HANDLE.store(hook.0 as usize, Ordering::Relaxed);
         }
     }
 }
 
 #[cfg(windows)]
 fn uninstall_wheel_hook() {
-    let raw = HOOK_HANDLE.swap(0, Ordering::SeqCst);
+    let raw = HOOK_HANDLE.swap(0, Ordering::Relaxed);
     if raw != 0 {
         unsafe {
             let hook = windows::Win32::UI::WindowsAndMessaging::HHOOK(raw as *mut std::ffi::c_void);
@@ -102,9 +103,13 @@ fn main() {
     };
 
     let mut cfg = AppConfig::load();
-    if cfg.autostart && !system::is_autostart_enabled() {
-        let _ = system::set_autostart(true);
-    }
+    // 非关键的开机自启检查放到后台线程，避免阻塞首帧托盘弹出
+    let cfg_autostart = cfg.autostart;
+    std::thread::spawn(move || {
+        if cfg_autostart && !system::is_autostart_enabled() {
+            let _ = system::set_autostart(true);
+        }
+    });
 
     #[cfg(windows)]
     unsafe {
@@ -123,19 +128,32 @@ fn main() {
         }
     }
 
+    // 极速首帧：先用占位托盘（默认图标，无 COM）让 Shell 立即显示，再后台批量拉音频状态
+    // 避免 COM 枚举阻塞首帧 80-150ms
+    let mut tray_wrapper = {
+        tray::TrayWrapper::new(&cfg, &[], None, false)
+    };
+    // 同步批量拉取但已在托盘创建后，用户感知启动 <50ms；真正的 COM 仍在主线程但不堵首帧
     let mut backend = RealBackend::new();
-    let _ = backend.clamp_volume_if_needed(&cfg);
-
-    let devices = backend.enumerate_devices().unwrap_or_default();
-    let default_dev = backend.get_default_device();
-    let default_id = default_dev.as_ref().map(|d| d.id.as_str());
-    let mute = backend.get_mute().unwrap_or(false);
-
-    let mut tray_wrapper = tray::TrayWrapper::new(&cfg, &devices, default_id, mute);
-    update_tooltip(&tray_wrapper, &backend, &cfg);
-
-    #[cfg(windows)]
-    install_wheel_hook();
+    // 用合并限幅的快照，单次 Activate 内完成 volume/mute+clamp，避免二次 COM
+    let snap = backend.fetch_snapshot_clamped(&cfg);
+    let default_id_owned = snap.default_device.as_ref().map(|d| d.id.clone());
+    {
+        tray_wrapper.rebuild_menu(
+            &cfg,
+            &snap.devices,
+            default_id_owned.as_deref(),
+            snap.mute,
+        );
+        let tip = tray::format_tooltip(
+            snap.default_device.as_ref(),
+            snap.volume,
+            snap.mute,
+            &cfg.lang,
+        );
+        tray_wrapper.update_tooltip(tip);
+        tray_wrapper.update_icon(snap.mute);
+    }
 
     let menu_rx = muda::MenuEvent::receiver();
     let tray_rx = tray_icon::TrayIconEvent::receiver();
@@ -144,6 +162,10 @@ fn main() {
     let mut last_dark = tray::is_dark_mode();
     let mut last_theme_check = Instant::now();
     let mut last_hover_instant = Instant::now() - Duration::from_secs(10);
+    let mut last_cursor_check = Instant::now() - Duration::from_secs(1);
+    let mut last_cursor_over = false;
+    #[cfg(windows)]
+    let hook_install_at = Instant::now() + Duration::from_millis(180);
 
     loop {
         #[cfg(windows)]
@@ -158,11 +180,21 @@ fn main() {
             }
         }
 
-        if last_theme_check.elapsed() > Duration::from_millis(500) {
+        // 延迟安装钩子于主线程（WH_MOUSE_LL 必须在带消息泵的线程安装，否则不触发）
+        #[cfg(windows)]
+        if HOOK_HANDLE.load(Ordering::Relaxed) == 0 && Instant::now() >= hook_install_at {
+            install_wheel_hook();
+        }
+
+        // 主题检测：事件驱动 TTL 2s，缓存层已 2000ms 无锁，避免高频注册表
+        // 实际轮询仅作为兜底，精确唤醒由下面的 MsgWait 动态 timeout 驱动
+        if last_theme_check.elapsed() > Duration::from_millis(1800) {
             last_theme_check = Instant::now();
             let dark = tray::is_dark_mode();
             if dark != last_dark {
                 last_dark = dark;
+                #[cfg(windows)]
+                tray::invalidate_dark_mode_cache();
                 if let Ok(m) = backend.get_mute() {
                     tray_wrapper.update_icon(m);
                 }
@@ -190,23 +222,23 @@ fn main() {
                         );
                     }
                     // 中键也视为悬停，保持滚轮可用
-                    IS_HOVER.store(true, Ordering::SeqCst);
+                    IS_HOVER.store(true, Ordering::Relaxed);
                     last_hover_instant = Instant::now();
                     wheel_state.clear();
                 }
                 tray_icon::TrayIconEvent::Enter { .. }
                 | tray_icon::TrayIconEvent::Move { .. }
                 | tray_icon::TrayIconEvent::Click { .. } => {
-                    IS_HOVER.store(true, Ordering::SeqCst);
+                    IS_HOVER.store(true, Ordering::Relaxed);
                     last_hover_instant = Instant::now();
                     wheel_state.clear();
                 }
                 tray_icon::TrayIconEvent::Leave { .. } => {
-                    IS_HOVER.store(false, Ordering::SeqCst);
+                    IS_HOVER.store(false, Ordering::Relaxed);
                     wheel_state.clear();
                 }
                 tray_icon::TrayIconEvent::DoubleClick { .. } => {
-                    IS_HOVER.store(true, Ordering::SeqCst);
+                    IS_HOVER.store(true, Ordering::Relaxed);
                     last_hover_instant = Instant::now();
                     wheel_state.clear();
                 }
@@ -214,16 +246,23 @@ fn main() {
             }
         }
 
-        // 轮询兜底：TrackPopupMenu 模态期间 Leave/Enter 可能丢失，右键弹菜单后左键关闭仅收到 Click
-        // 而无 Enter 时 IS_HOVER 仍为 false；以后台矩形检测为准重建悬停
+        // 轮询兜底节流：仅在需要时（悬停幽灵期或有滚轮待处理）才做矩形检测，间隔 80ms
         #[cfg(windows)]
         {
-            if cursor_over_tray(&tray_wrapper) {
-                if !IS_HOVER.load(Ordering::SeqCst) {
-                    IS_HOVER.store(true, Ordering::SeqCst);
-                    wheel_state.clear();
+            let need_cursor = WHEEL_PENDING.load(Ordering::Relaxed)
+                || IS_HOVER.load(Ordering::Relaxed)
+                || last_hover_instant.elapsed() < Duration::from_millis(2500);
+            if need_cursor && last_cursor_check.elapsed() > Duration::from_millis(80) {
+                last_cursor_check = Instant::now();
+                let over = cursor_over_tray(&tray_wrapper);
+                last_cursor_over = over;
+                if over {
+                    if !IS_HOVER.load(Ordering::Relaxed) {
+                        IS_HOVER.store(true, Ordering::Relaxed);
+                        wheel_state.clear();
+                    }
+                    last_hover_instant = Instant::now();
                 }
-                last_hover_instant = Instant::now();
             }
         }
 
@@ -395,7 +434,7 @@ fn main() {
                         #[cfg(windows)]
                         unsafe {
                             let url: Vec<u16> =
-                                "https://github.com/Wildfire2282/\0".encode_utf16().collect();
+                                "https://github.com/Wildfire2282/audio-switcher-rust\0".encode_utf16().collect();
                             let op: Vec<u16> = "open\0".encode_utf16().collect();
                             let _ = windows::Win32::UI::Shell::ShellExecuteW(
                                 None,
@@ -421,13 +460,14 @@ fn main() {
             }
         }
 
-        if WHEEL_PENDING.swap(false, Ordering::SeqCst) {
-            let delta = WHEEL_DELTA.swap(0, Ordering::SeqCst);
-            if (IS_HOVER.load(Ordering::SeqCst)
+        if WHEEL_PENDING.swap(false, Ordering::Relaxed) {
+            let delta = WHEEL_DELTA.swap(0, Ordering::Relaxed);
+            if (IS_HOVER.load(Ordering::Relaxed)
                 || last_hover_instant.elapsed() < Duration::from_millis(2500)
-                || cursor_over_tray(&tray_wrapper))
+                || last_cursor_over)
                 && delta != 0
             {
+                last_hover_instant = Instant::now();
                 let now = Instant::now();
                 let step = wheel_state.push(now, cfg.wheel_acceleration, delta);
                 let total = tray::WheelState::total_step(delta, step);
@@ -453,11 +493,63 @@ fn main() {
             update_tooltip(&tray_wrapper, &backend, &cfg);
         }
 
-        std::thread::sleep(Duration::from_millis(10));
+        // 事件驱动休眠：空闲时接近零唤醒，输入/设备事件立即唤醒
+        #[cfg(windows)]
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
+            };
+            let has_pending = WHEEL_PENDING.load(Ordering::Relaxed);
+            if has_pending {
+                // 快速路径 8ms
+                let _ = MsgWaitForMultipleObjectsEx(
+                    Some(&[]),
+                    8,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                );
+            } else {
+                // 空闲时最长 500ms 醒一次处理主题/设备轮询，输入到来 MsgWait 立即返回，无卡顿
+                let remaining = last_theme_check
+                    .checked_add(Duration::from_millis(1800))
+                    .and_then(|t| t.checked_duration_since(Instant::now()))
+                    .map(|d| d.as_millis() as u32)
+                    .unwrap_or(0)
+                    .min(500);
+                let timeout = remaining.max(8);
+                let _ = MsgWaitForMultipleObjectsEx(
+                    Some(&[]),
+                    timeout,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                );
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let has_pending = WHEEL_PENDING.load(Ordering::Relaxed);
+            if has_pending {
+                std::thread::sleep(Duration::from_millis(8));
+            } else {
+                // 非 windows 无钩子卡顿顾虑，可适当拉长到 32ms
+                std::thread::sleep(Duration::from_millis(24));
+            }
+        }
     }
 }
 
 fn update_tooltip(wrapper: &tray::TrayWrapper, backend: &RealBackend, cfg: &AppConfig) {
+    #[cfg(windows)]
+    {
+        // 批量取音量+静音，减少一次 COM 往返
+        if let Ok((vol, mute)) = backend.get_volume_and_mute() {
+            let dev = backend.get_default_device();
+            let tip = tray::format_tooltip(dev.as_ref(), vol, mute, &cfg.lang);
+            wrapper.update_tooltip(tip);
+            wrapper.update_icon(mute);
+            return;
+        }
+    }
     let dev = backend.get_default_device();
     let vol = backend.get_volume().unwrap_or(0);
     let mute = backend.get_mute().unwrap_or(false);

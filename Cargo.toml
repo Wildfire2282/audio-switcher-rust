@@ -26,7 +26,8 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_Controls",
   "Win32_System_LibraryLoader",
   "Win32_System_SystemInformation",
-] }
+]
+}
 tray-icon = "0.24.2"
 muda = "0.19.3"
 auto-launch = "0.6.0"
@@ -46,6 +47,13 @@ name = "audio-switcher-rust"
 path = "src/main.rs"
 
 [profile.release]
-lto = true
+lto = "fat"
+codegen-units = 1
+opt-level = "z"
 strip = true
 panic = "abort"
+incremental = false
+
+[profile.dev]
+panic = "abort"
+

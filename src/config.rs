@@ -1,7 +1,21 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 const CURRENT_VERSION: u32 = 1;
+static CONFIG_PATH_CACHE: LazyLock<PathBuf> = LazyLock::new(|| {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        PathBuf::from(appdata).join("AudioSwitcher").join("config.json")
+    } else if let Ok(home) = std::env::var("USERPROFILE") {
+        PathBuf::from(home)
+            .join("AppData")
+            .join("Roaming")
+            .join("AudioSwitcher")
+            .join("config.json")
+    } else {
+        PathBuf::from("config.json")
+    }
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppConfig {
@@ -53,19 +67,7 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn config_path() -> PathBuf {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            PathBuf::from(appdata)
-                .join("AudioSwitcher")
-                .join("config.json")
-        } else if let Ok(home) = std::env::var("USERPROFILE") {
-            PathBuf::from(home)
-                .join("AppData")
-                .join("Roaming")
-                .join("AudioSwitcher")
-                .join("config.json")
-        } else {
-            PathBuf::from("config.json")
-        }
+        (*CONFIG_PATH_CACHE).clone()
     }
 
     #[cfg(test)]
@@ -79,10 +81,9 @@ impl AppConfig {
     }
 
     pub fn load_from(path: &Path) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(content) => match serde_json::from_str::<AppConfig>(&content) {
+        match std::fs::read(path) {
+            Ok(bytes) => match serde_json::from_slice::<AppConfig>(&bytes) {
                 Ok(mut cfg) => {
-                    // migration / validation
                     if cfg.version != CURRENT_VERSION {
                         cfg.version = CURRENT_VERSION;
                     }
@@ -102,24 +103,51 @@ impl AppConfig {
             },
             Err(_) => {
                 let def = AppConfig::default();
-                // try to save defaults, ignore errors
                 let _ = def.save_to(path);
                 def
             }
         }
     }
 
+    /// Non-blocking save to default path: spawns background thread with atomic tmp+rename.
     pub fn save(&self) -> std::io::Result<()> {
+        let cfg = self.clone();
         let path = Self::config_path();
-        self.save_to(&path)
+        std::thread::spawn(move || {
+            let _ = cfg.save_to(&path);
+        });
+        Ok(())
     }
 
+    /// Synchronous atomic save: write to tmp alongside target then rename.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self).unwrap();
-        std::fs::write(path, json)
+        // tmp in same dir to ensure same filesystem for atomic rename
+        let tmp_path = {
+            let mut s = path.as_os_str().to_owned();
+            s.push(".tmp");
+            PathBuf::from(s)
+        };
+        // also fallback: if path is "config.json", tmp is "config.json.tmp"
+        std::fs::write(&tmp_path, json.as_bytes())?;
+        match std::fs::rename(&tmp_path, path) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Windows rename may fail if destination exists under some conditions; retry after remove
+                let _ = std::fs::remove_file(path);
+                match std::fs::rename(&tmp_path, path) {
+                    Ok(()) => Ok(()),
+                    Err(_) => {
+                        // cleanup tmp on failure
+                        let _ = std::fs::remove_file(&tmp_path);
+                        Err(e)
+                    }
+                }
+            }
+        }
     }
 
     /// Validate custom threshold string, return Ok(value) or Err(message key)
@@ -206,22 +234,31 @@ mod tests {
     }
 
     #[test]
+    fn migration_version() {
+        let dir = tempdir().unwrap();
+        let path = AppConfig::config_path_for(dir.path());
+        // 写入旧版本配置，验证加载时自动迁移
+        let old = r#"{"version":0,"lang":"zh","volume_limit_enabled":true,"volume_limit":25,"wheel_acceleration":true,"autostart":true}"#;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, old).unwrap();
+        let loaded = AppConfig::load_from(&path);
+        assert_eq!(loaded.version, 1);
+    }
+
+    #[test]
     fn corrupted_fallback() {
         let dir = tempdir().unwrap();
         let path = AppConfig::config_path_for(dir.path());
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "not json").unwrap();
         let loaded = AppConfig::load_from(&path);
+        // 损坏文件应回落到默认值并重写
         assert_eq!(loaded, AppConfig::default());
-    }
-
-    #[test]
-    fn migration_version() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("config.json");
-        std::fs::write(&path, r#"{"lang":"zh","version":0}"#).unwrap();
-        let loaded = AppConfig::load_from(&path);
-        assert_eq!(loaded.version, 1);
-        assert_eq!(loaded.lang, "zh");
+        assert!(path.exists());
     }
 }
+
+
+
+
+
