@@ -751,12 +751,15 @@ pub fn show_about(lang: &str) {
         use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
         use windows::Win32::Graphics::Gdi::HBRUSH;
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::Controls::{
+            InitCommonControlsEx, INITCOMMONCONTROLSEX, ICC_LINK_CLASS,
+        };
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
             IsWindow, LoadCursorW, PostQuitMessage, RegisterClassW, TranslateMessage, IDC_ARROW,
             MSG, WINDOW_EX_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSW,
-            WS_CAPTION, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+            WM_NOTIFY, WS_CAPTION, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
         };
         unsafe extern "system" fn wndproc_about(
             hwnd: HWND,
@@ -788,8 +791,8 @@ pub fn show_about(lang: &str) {
                     );
                     let _ = CreateW(
                         WINDOW_EX_STYLE(0),
-                        w!("BUTTON"),
-                        w!("https://github.com"),
+                        w!("SysLink"),
+                        w!("<a href=\"https://github.com\">https://github.com</a>"),
                         WS_CHILD | WS_VISIBLE,
                         80,
                         20,
@@ -820,7 +823,16 @@ pub fn show_about(lang: &str) {
                     let id = (wparam.0 & 0xFFFF) as u16;
                     if id == 1 {
                         let _ = DestroyWindow(hwnd);
-                    } else if id == 101 {
+                    }
+                    LRESULT(0)
+                }
+                WM_NOTIFY => {
+                    // SysLink 通过 WM_NOTIFY/NM_CLICK(0xFFFFFFFE) 与 NM_RETURN(0xFFFFFFFC) 通知点击
+                    let code = unsafe {
+                        let hdr = &*(lparam.0 as *const windows::Win32::UI::Controls::NMHDR);
+                        hdr.code
+                    };
+                    if code == 0xFFFFFFFE || code == 0xFFFFFFFC {
                         let url: Vec<u16> = "https://github.com\0".encode_utf16().collect();
                         let op: Vec<u16> = "open\0".encode_utf16().collect();
                         let _ = ShellExecuteW(
@@ -847,6 +859,11 @@ pub fn show_about(lang: &str) {
         }
         let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
         let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
+        let icc = INITCOMMONCONTROLSEX {
+            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_LINK_CLASS,
+        };
+        let _ = InitCommonControlsEx(&icc);
         let class_name = w!("AudioSwitcherAbout");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(wndproc_about),
