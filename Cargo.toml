@@ -5,6 +5,10 @@ edition = "2021"
 description = "Audio Switcher Rust tray tool"
 authors = []
 license = "MIT"
+rust-version = "1.75"
+readme = "README.md"
+keywords = ["audio", "tray", "windows", "switcher"]
+categories = ["os::windows"]
 
 [dependencies]
 windows = { version = "0.62.2", features = [
@@ -36,6 +40,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 parking_lot = "0.12"
 windows-core = "0.62"
+thiserror = "2.0"
 [dev-dependencies]
 tempfile = "3.10"
 
@@ -43,9 +48,9 @@ tempfile = "3.10"
 embed-manifest = "1.4"
 winres = "0.1.12"
 
-[[bin]]
-name = "audio-switcher-rust"
-path = "src/main.rs"
+[lib]
+name = "audio_switcher_rust"
+path = "src/lib.rs"
 
 [profile.release]
 lto = "fat"
@@ -54,7 +59,41 @@ opt-level = "z"
 strip = true
 panic = "abort"
 incremental = false
+overflow-checks = true
 
 [profile.dev]
 panic = "abort"
+overflow-checks = true
+
+[profile.bench]
+inherits = "release"
+debug = true
+strip = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(windows)'] }
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "allow"
+
+[lints.clippy]
+correctness = { level = "deny", priority = 1 }
+suspicious = { level = "warn", priority = 1 }
+style = { level = "warn", priority = 1 }
+complexity = { level = "warn", priority = 1 }
+perf = { level = "warn", priority = 1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "allow", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# FFI/COM interop triggers pedantic noise — allow per-module
+ptr_as_ptr = "allow"
+borrow_as_ptr = "allow"
+cast_possible_wrap = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+cast_precision_loss = "allow"
+items_after_statements = "allow"
+doc_markdown = "allow"
+too_many_lines = "allow"
+must_use_candidate = "allow"
 

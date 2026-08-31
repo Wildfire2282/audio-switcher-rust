@@ -1,75 +1,133 @@
+//! Audio backend abstraction.
+//!
+//! `AudioBackend` is the port for device enumeration, default switching and
+//! volume/mute control. The trait is generic over `App` for test injection
+//! (`MockBackend`) and for the Windows `RealBackend`.
+
+use thiserror::Error;
+
 use crate::config::AppConfig;
 
-#[derive(Debug, Clone, PartialEq)]
+/// An audio endpoint discovered via WASAPI.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioDevice {
+    /// WASAPI endpoint ID (`IMMDevice::GetId`).
     pub id: String,
+    /// Friendly name (`PKEY_Device_FriendlyName`).
     pub name: String,
 }
 
-#[derive(Debug, Clone)]
+/// Errors from the audio subsystem.
+#[derive(Debug, Clone, Error)]
 pub enum AudioError {
-    /// COM / HRESULT failure, hr preserved for diagnostics
+    /// COM / HRESULT failure; `hr` preserved for diagnostics.
+    #[error("COM 0x{hr:08X}: {msg}")]
     Com { hr: i32, msg: String },
+
+    /// Generic failure with context.
+    #[error("audio failed: {0}")]
     Failed(String),
 }
-
-impl std::fmt::Display for AudioError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AudioError::Com { hr, msg } if *hr != 0 => write!(f, "COM 0x{:08X}: {}", *hr as u32, msg),
-            AudioError::Com { msg, .. } => write!(f, "COM error: {}", msg),
-            AudioError::Failed(s) => write!(f, "failed: {}", s),
-        }
-    }
-}
-impl std::error::Error for AudioError {}
 
 #[cfg(windows)]
 impl From<windows::core::Error> for AudioError {
     fn from(e: windows::core::Error) -> Self {
-        Self::Com { hr: e.code().0, msg: e.to_string() }
+        Self::Com {
+            hr: e.code().0,
+            msg: e.to_string(),
+        }
     }
 }
 
+/// Backend for audio operations.
+///
+/// Must be `Send` where possible; `RealBackend` registers a COM notification
+/// client on the STA thread and keeps it via `OnceLock`.
 pub trait AudioBackend {
+    /// Enumerate active render endpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Com` on WASAPI failure.
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError>;
+
+    /// Current default render device, if any.
     fn get_default_device(&self) -> Option<AudioDevice>;
+
+    /// Set the default render device by `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Failed` if `id` is unknown, `Com` on WASAPI failure.
     fn set_default_device(&mut self, id: &str) -> Result<(), AudioError>;
+
+    /// Master volume `0..=100`.
     fn get_volume(&self) -> Result<u32, AudioError>;
+
+    /// Set master volume `0..=100` (values outside are clamped by caller).
     fn set_volume(&mut self, volume: u32) -> Result<(), AudioError>;
+
+    /// Whether the endpoint is muted.
     fn get_mute(&self) -> Result<bool, AudioError>;
+
+    /// Set mute state.
     fn set_mute(&mut self, mute: bool) -> Result<(), AudioError>;
+
+    /// Clamp volume to `cfg` if limiting is enabled.
     fn clamp_volume_if_needed(&mut self, cfg: &AppConfig) -> Result<(), AudioError>;
-    /// Batch fetch volume+mute; default impl does two calls, RealBackend overrides with single Activate.
+
+    /// Batch fetch `(volume, mute)`; default impl does two calls.
+    ///
+    /// `RealBackend` overrides with a single `Activate`.
     fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
         Ok((self.get_volume()?, self.get_mute()?))
     }
-    /// Whether external device change notification fired. Default false for mocks.
+
+    /// Whether an external device change notification fired.
+    ///
+    /// Default `false` for mocks.
     fn poll_device_changed(&mut self) -> bool {
         false
     }
-    /// Clamped snapshot in one round-trip; default builds from above methods.
+
+    /// Fetch a clamped snapshot in one round-trip; default builds from the
+    /// methods above.
     fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot {
         let devices = self.enumerate_devices().unwrap_or_default();
         let default_device = self.get_default_device();
         let (volume, mute) = self.get_volume_and_mute().unwrap_or((50, false));
         let volume = crate::config::clamp_volume(volume, cfg);
-        AudioSnapshot { devices, default_device, volume, mute }
+        AudioSnapshot {
+            devices,
+            default_device,
+            volume,
+            mute,
+        }
     }
 }
 
-/// 快照：一次性获取枚举/默认/音量/静音，避免多次 CoCreateInstance
+/// Snapshot of the current audio state — fetched once per UI refresh to avoid
+/// repeated `CoCreateInstance` calls.
 #[derive(Debug, Clone)]
 pub struct AudioSnapshot {
+    /// Enumerated devices.
     pub devices: Vec<AudioDevice>,
+    /// Default device, if known.
     pub default_device: Option<AudioDevice>,
+    /// Current volume `0..=100`.
     pub volume: u32,
+    /// Mute state.
     pub mute: bool,
 }
 
 impl Default for AudioSnapshot {
     fn default() -> Self {
-        Self { devices: Vec::new(), default_device: None, volume: 50, mute: false }
+        Self {
+            devices: Vec::new(),
+            default_device: None,
+            volume: 50,
+            mute: false,
+        }
     }
 }
 
@@ -87,14 +145,20 @@ mod tests {
 
     #[test]
     fn mock_enumerate_cache() {
-        let devs = vec![AudioDevice { id: "a".into(), name: "Speaker".into() }];
+        let devs = vec![AudioDevice {
+            id: "a".into(),
+            name: "Speaker".into(),
+        }];
         let mut m = MockBackend::new(devs.clone(), Some("a".into()));
         let first = m.enumerate_devices().unwrap();
         assert_eq!(first.len(), 1);
         let count_before = m.enumerate_count;
         let second = m.enumerate_devices().unwrap();
         assert_eq!(second.len(), 1);
-        assert_eq!(m.enumerate_count, count_before, "should hit cache within 800ms");
+        assert_eq!(
+            m.enumerate_count, count_before,
+            "should hit cache within 800ms"
+        );
         std::thread::sleep(std::time::Duration::from_millis(850));
         let _third = m.enumerate_devices().unwrap();
         assert_eq!(m.enumerate_count, count_before + 1);
@@ -102,7 +166,10 @@ mod tests {
 
     #[test]
     fn mock_empty_keeps_current() {
-        let devs = vec![AudioDevice { id: "a".into(), name: "Sp".into() }];
+        let devs = vec![AudioDevice {
+            id: "a".into(),
+            name: "Sp".into(),
+        }];
         let mut m = MockBackend::new(devs.clone(), Some("a".into()));
         let _ = m.enumerate_devices().unwrap();
         m.devices = vec![];
@@ -113,7 +180,11 @@ mod tests {
 
     #[test]
     fn clamp_via_backend() {
-        let cfg = AppConfig { volume_limit: 25, volume_limit_enabled: true, ..Default::default() };
+        let cfg = AppConfig {
+            volume_limit: 25,
+            volume_limit_enabled: true,
+            ..Default::default()
+        };
         let mut m = MockBackend::new(vec![], None);
         m.volume = 80;
         m.clamp_volume_if_needed(&cfg).unwrap();
@@ -123,8 +194,14 @@ mod tests {
     #[test]
     fn set_default_device_mock() {
         let devs = vec![
-            AudioDevice { id: "a".into(), name: "A".into() },
-            AudioDevice { id: "b".into(), name: "B".into() },
+            AudioDevice {
+                id: "a".into(),
+                name: "A".into(),
+            },
+            AudioDevice {
+                id: "b".into(),
+                name: "B".into(),
+            },
         ];
         let mut m = MockBackend::new(devs, Some("a".into()));
         m.set_default_device("b").unwrap();
@@ -135,7 +212,10 @@ mod tests {
     #[test]
     #[ignore]
     fn integration_real_mock() {
-        let devs = vec![AudioDevice { id: "x".into(), name: "X".into() }];
+        let devs = vec![AudioDevice {
+            id: "x".into(),
+            name: "X".into(),
+        }];
         let mut backend: Box<dyn AudioBackend> = Box::new(MockBackend::new(devs, None));
         let list = backend.enumerate_devices().unwrap();
         assert_eq!(list.len(), 1);

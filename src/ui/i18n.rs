@@ -1,5 +1,15 @@
-pub fn tr(key: &str, lang: &str) -> String {
-    let zh = lang == "zh";
+//! Internationalisation helpers.
+//!
+//! `tr` translates a message key for the given [`Lang`].
+
+use crate::config::Lang;
+
+/// Translate `key` for `lang`.
+///
+/// Unknown keys are returned verbatim, which keeps menus debuggable.
+#[must_use]
+pub fn tr(key: &str, lang: Lang) -> String {
+    let zh = lang.is_zh();
     match key {
         "mute" => {
             if zh { "全局静音".into() } else { "Mute".into() }
@@ -56,11 +66,13 @@ pub fn tr(key: &str, lang: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Lang;
+
     #[test]
     fn i18n_zh_en() {
-        assert_eq!(tr("mute", "zh"), "全局静音");
-        assert_eq!(tr("mute", "en"), "Mute");
-        assert_eq!(tr("volume_limit", "zh"), "音量上限");
-        assert_eq!(tr("experimental", "en"), "Experimental");
+        assert_eq!(tr("mute", Lang::Zh), "全局静音");
+        assert_eq!(tr("mute", Lang::En), "Mute");
+        assert_eq!(tr("volume_limit", Lang::Zh), "音量上限");
+        assert_eq!(tr("experimental", Lang::En), "Experimental");
     }
 }

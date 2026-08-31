@@ -19,7 +19,7 @@ impl TrayWrapper {
             default_id.and_then(|id| devices.iter().find(|d| d.id == id)),
             50,
             muted,
-            &cfg.lang,
+            cfg.lang,
         );
         let tray = TrayIconBuilder::new()
             .with_icon(icon)
@@ -31,15 +31,18 @@ impl TrayWrapper {
         Self { tray, handles }
     }
 
+    /// Update the tooltip text.
     pub fn update_tooltip(&self, text: String) {
         let _ = self.tray.set_tooltip(Some(text));
     }
 
+    /// Update the tray icon for mute state.
     pub fn update_icon(&self, muted: bool) {
         let icon = make_icon(muted);
         let _ = self.tray.set_icon(Some(icon));
     }
 
+    /// Rebuild the context menu from current config/devices.
     pub fn rebuild_menu(
         &mut self,
         cfg: &AppConfig,
@@ -53,12 +56,14 @@ impl TrayWrapper {
     }
 }
 
+/// Open the system volume mixer.
 pub fn open_volume_mixer() {
     if crate::platform::shell::open_file("SndVol.exe", None).is_err() {
         crate::platform::shell::show_error("打开音量合成器失败");
     }
 }
 
+/// Open the system sound settings.
 pub fn open_sound_settings() {
     if crate::platform::shell::open_file("control", Some("mmsys.cpl")).is_err() {
         crate::platform::shell::show_error("打开声音设置失败");

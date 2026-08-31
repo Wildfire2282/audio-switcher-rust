@@ -1,8 +1,16 @@
-use serde::{Deserialize, Serialize};
+//! Application configuration persistence.
+//!
+//! `AppConfig` is stored as JSON at `%APPDATA%\AudioSwitcher\config.json`.
+//! All public fields have `serde(default)` so older files stay compatible.
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::LazyLock;
 
 const CURRENT_VERSION: u32 = 1;
+
+/// Cached config path — computed once per process.
 static CONFIG_PATH_CACHE: LazyLock<PathBuf> = LazyLock::new(|| {
     if let Ok(appdata) = std::env::var("APPDATA") {
         PathBuf::from(appdata).join("AudioSwitcher").join("config.json")
@@ -17,18 +25,123 @@ static CONFIG_PATH_CACHE: LazyLock<PathBuf> = LazyLock::new(|| {
     }
 });
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+// ---------------------------------------------------------------------------
+// Lang
+// ---------------------------------------------------------------------------
+
+/// UI language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Lang {
+    #[default]
+    Zh,
+    En,
+}
+
+impl Lang {
+    /// String representation as stored in JSON / config.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Zh => "zh",
+            Self::En => "en",
+        }
+    }
+
+    /// Whether this is Chinese.
+    #[must_use]
+    pub fn is_zh(self) -> bool {
+        self == Self::Zh
+    }
+}
+
+impl std::fmt::Display for Lang {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Lang {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "zh" | "chinese" | "cn" => Ok(Self::Zh),
+            "en" | "english" => Ok(Self::En),
+            _ => Err("unknown language"),
+        }
+    }
+}
+
+// serde: store as lowercase string, tolerant to unknown values (fallback Zh)
+fn deserialize_lang<'de, D>(de: D) -> Result<Lang, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(de)?;
+    Ok(s.parse::<Lang>().unwrap_or(Lang::Zh))
+}
+
+fn serialize_lang<S>(lang: &Lang, ser: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    ser.serialize_str(lang.as_str())
+}
+
+impl Serialize for Lang {
+    fn serialize<S>(&self, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        ser.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Lang {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserialize_lang(de)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AppConfig
+// ---------------------------------------------------------------------------
+
+/// Persisted application configuration.
+///
+/// # Examples
+///
+/// ```
+/// use audio_switcher_rust::config::{AppConfig, Lang};
+/// let cfg = AppConfig::default();
+/// assert_eq!(cfg.lang, Lang::Zh);
+/// assert_eq!(cfg.volume_limit, 25);
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppConfig {
+    /// Config schema version for migrations.
     #[serde(default = "default_version")]
     pub version: u32,
-    #[serde(default = "default_lang")]
-    pub lang: String,
+    /// UI language.
+    #[serde(
+        default = "default_lang",
+        deserialize_with = "deserialize_lang",
+        serialize_with = "serialize_lang"
+    )]
+    pub lang: Lang,
+    /// Whether volume limiting is enabled.
     #[serde(default = "default_volume_limit_enabled")]
     pub volume_limit_enabled: bool,
+    /// Maximum volume percent when limiting is enabled (1..=100).
     #[serde(default = "default_volume_limit")]
     pub volume_limit: u32,
+    /// Whether wheel acceleration (fast scroll → larger steps) is enabled.
     #[serde(default = "default_wheel_accel")]
     pub wheel_acceleration: bool,
+    /// Whether to register for auto-launch at login.
     #[serde(default = "default_autostart")]
     pub autostart: bool,
 }
@@ -36,8 +149,8 @@ pub struct AppConfig {
 fn default_version() -> u32 {
     CURRENT_VERSION
 }
-fn default_lang() -> String {
-    "zh".to_string()
+fn default_lang() -> Lang {
+    Lang::Zh
 }
 fn default_volume_limit_enabled() -> bool {
     true
@@ -66,29 +179,34 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Returns the cached config file path.
+    #[must_use]
     pub fn config_path() -> PathBuf {
         (*CONFIG_PATH_CACHE).clone()
     }
 
+    /// Test helper: config path inside a temp dir.
     #[cfg(test)]
+    #[must_use]
     pub fn config_path_for(dir: &Path) -> PathBuf {
         dir.join("config.json")
     }
 
+    /// Load config from the standard location, falling back to defaults.
+    #[must_use]
     pub fn load() -> Self {
         let path = Self::config_path();
         Self::load_from(&path)
     }
 
+    /// Load config from an explicit path with validation and migration.
+    #[must_use]
     pub fn load_from(path: &Path) -> Self {
         match std::fs::read(path) {
-            Ok(bytes) => match serde_json::from_slice::<AppConfig>(&bytes) {
+            Ok(bytes) => match serde_json::from_slice::<Self>(&bytes) {
                 Ok(mut cfg) => {
                     if cfg.version != CURRENT_VERSION {
                         cfg.version = CURRENT_VERSION;
-                    }
-                    if cfg.lang != "zh" && cfg.lang != "en" {
-                        cfg.lang = default_lang();
                     }
                     if !(1..=100).contains(&cfg.volume_limit) {
                         cfg.volume_limit = default_volume_limit();
@@ -96,39 +214,54 @@ impl AppConfig {
                     cfg
                 }
                 Err(_) => {
-                    let def = AppConfig::default();
+                    let def = Self::default();
                     let _ = def.save_to(path);
                     def
                 }
             },
             Err(_) => {
-                let def = AppConfig::default();
+                let def = Self::default();
                 let _ = def.save_to(path);
                 def
             }
         }
     }
 
-    /// Non-blocking save, returns handle for joining in tests. Fire-and-forget callers may drop it.
+    /// Non-blocking save; returns a handle that can be joined in tests.
+    ///
+    /// Fire-and-forget callers may drop the handle.
     pub fn save(&self) -> std::thread::JoinHandle<std::io::Result<()>> {
         let cfg = self.clone();
         let path = Self::config_path();
         std::thread::spawn(move || cfg.save_to(&path))
     }
 
-    /// Synchronous atomic save: write to unique tmp alongside target then rename.
-    /// Unique suffix avoids concurrent `save()` callers racing on same `config.json.tmp`.
+    /// Synchronous atomic save: write to a unique temporary file alongside the
+    /// target then rename. The unique suffix avoids races between concurrent
+    /// `save()` callers.
+    ///
+    /// # Errors
+    ///
+    /// Returns `io::Error` if directory creation, write, or rename fails.
     pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(self).unwrap();
+        // SAFETY: AppConfig is always serializable.
+        let json = serde_json::to_string_pretty(self).expect("AppConfig serialization never fails");
         let tmp_path = {
-            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "config.json".into());
+            static COUNTER: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "config.json".into());
             let suffix = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-            path.with_file_name(format!("{}.tmp.{}-{}", file_name, nanos, suffix))
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            path.with_file_name(format!("{file_name}.tmp.{nanos}-{suffix}"))
         };
         std::fs::write(&tmp_path, json.as_bytes())?;
         if std::fs::rename(&tmp_path, path).is_ok() {
@@ -144,7 +277,17 @@ impl AppConfig {
         }
     }
 
-    /// Validate custom threshold string, return Ok(value) or Err(message key)
+    /// Validate a custom threshold string.
+    ///
+    /// Returns `Ok(value)` for integers `1..=100`, `Err("invalid")` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use audio_switcher_rust::config::AppConfig;
+    /// assert_eq!(AppConfig::validate_custom_limit("50").unwrap(), 50);
+    /// assert!(AppConfig::validate_custom_limit("0").is_err());
+    /// ```
     pub fn validate_custom_limit(s: &str) -> Result<u32, &'static str> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
@@ -157,7 +300,8 @@ impl AppConfig {
     }
 }
 
-/// Clamp volume according to config
+/// Clamp `volume` according to `cfg`.
+#[must_use]
 pub fn clamp_volume(volume: u32, cfg: &AppConfig) -> u32 {
     if cfg.volume_limit_enabled {
         volume.min(cfg.volume_limit)
@@ -174,12 +318,21 @@ mod tests {
     #[test]
     fn default_values() {
         let c = AppConfig::default();
-        assert_eq!(c.lang, "zh");
+        assert_eq!(c.lang, Lang::Zh);
+        assert_eq!(c.lang.as_str(), "zh");
         assert!(c.volume_limit_enabled);
         assert_eq!(c.volume_limit, 25);
         assert!(c.wheel_acceleration);
         assert!(c.autostart);
         assert_eq!(c.version, 1);
+    }
+
+    #[test]
+    fn lang_roundtrip() {
+        assert_eq!("zh".parse::<Lang>().unwrap(), Lang::Zh);
+        assert_eq!("en".parse::<Lang>().unwrap(), Lang::En);
+        assert_eq!(Lang::Zh.to_string(), "zh");
+        assert_eq!(Lang::En.to_string(), "en");
     }
 
     #[test]
@@ -217,13 +370,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = AppConfig::config_path_for(dir.path());
         let cfg = AppConfig {
-            lang: "en".to_string(),
+            lang: Lang::En,
             volume_limit: 50,
             ..Default::default()
         };
         cfg.save_to(&path).unwrap();
         let loaded = AppConfig::load_from(&path);
-        assert_eq!(loaded.lang, "en");
+        assert_eq!(loaded.lang, Lang::En);
         assert_eq!(loaded.volume_limit, 50);
     }
 
@@ -231,7 +384,6 @@ mod tests {
     fn migration_version() {
         let dir = tempdir().unwrap();
         let path = AppConfig::config_path_for(dir.path());
-        // 写入旧版本配置，验证加载时自动迁移
         let old = r#"{"version":0,"lang":"zh","volume_limit_enabled":true,"volume_limit":25,"wheel_acceleration":true,"autostart":true}"#;
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, old).unwrap();
@@ -246,13 +398,19 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "not json").unwrap();
         let loaded = AppConfig::load_from(&path);
-        // 损坏文件应回落到默认值并重写
         assert_eq!(loaded, AppConfig::default());
         assert!(path.exists());
     }
+
+    #[test]
+    fn unknown_lang_fallback() {
+        let dir = tempdir().unwrap();
+        let path = AppConfig::config_path_for(dir.path());
+        let raw = r#"{"version":1,"lang":"fr","volume_limit_enabled":true,"volume_limit":25,"wheel_acceleration":true,"autostart":true}"#;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, raw).unwrap();
+        let loaded = AppConfig::load_from(&path);
+        // unknown lang maps to Zh via tolerant deserialize
+        assert_eq!(loaded.lang, Lang::Zh);
+    }
 }
-
-
-
-
-

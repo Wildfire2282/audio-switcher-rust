@@ -5,10 +5,11 @@ use windows::core::PCWSTR;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
 
+use crate::config::Lang;
 use crate::ui::i18n::tr;
 
 #[cfg(windows)]
-pub fn show_error_invalid_custom(lang: &str) {
+pub fn show_error_invalid_custom(lang: Lang) {
     unsafe {
         let txt = tr("invalid_custom", lang);
         let wide: Vec<u16> = txt.encode_utf16().chain(std::iter::once(0)).collect();
@@ -23,7 +24,7 @@ pub fn show_error_invalid_custom(lang: &str) {
 }
 
 #[cfg(not(windows))]
-pub fn show_error_invalid_custom(_lang: &str) {}
+pub fn show_error_invalid_custom(_lang: Lang) {}
 
 #[cfg(windows)]
 pub fn show_autostart_error() {
@@ -58,7 +59,7 @@ pub fn show_msgbox(msg: &str) {
 }
 
 #[cfg(windows)]
-pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
+pub fn prompt_custom_limit(lang: Lang) -> Option<u32> {
     use parking_lot::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     use windows::core::w;
@@ -172,7 +173,7 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
                         }
                         Err(_) => {
                             let is_zh = IS_ZH.load(Ordering::SeqCst);
-                            show_error_invalid_custom(if is_zh { "zh" } else { "en" });
+                            show_error_invalid_custom(if is_zh { Lang::Zh } else { Lang::En });
                         }
                     }
                 } else if id == 2 {
@@ -202,7 +203,7 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
     unsafe {
         *RESULT.lock() = None;
         DONE.store(false, Ordering::SeqCst);
-        IS_ZH.store(lang == "zh", Ordering::SeqCst);
+        IS_ZH.store(lang == Lang::Zh, Ordering::SeqCst);
         EDIT_HWND.store(0, Ordering::SeqCst);
         let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
         let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
@@ -220,7 +221,7 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
             RegisterClassW(&wc);
             true
         });
-        let title = if lang == "zh" { w!("自定义音量上限") } else { w!("Custom Volume Limit") };
+        let title = if lang == Lang::Zh { w!("自定义音量上限") } else { w!("Custom Volume Limit") };
         let hwnd = match CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class_name,
@@ -265,6 +266,13 @@ pub fn prompt_custom_limit(lang: &str) -> Option<u32> {
 }
 
 #[cfg(not(windows))]
-pub fn prompt_custom_limit(_lang: &str) -> Option<u32> {
+pub fn prompt_custom_limit(_lang: Lang) -> Option<u32> {
+    None
+}
+
+/// Backwards-compatible helper for callers that still pass `&str`.
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn prompt_custom_limit_str(_lang: &str) -> Option<u32> {
     None
 }

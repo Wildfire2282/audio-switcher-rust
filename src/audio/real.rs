@@ -118,7 +118,7 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
         let vtbl = unsafe { *(raw_unk as *mut *mut *mut std::ffi::c_void) };
         if vtbl.is_null() {
             last_err = Some(windows::core::Error::from_hresult(windows::core::HRESULT(
-                0x80004005u32 as i32,
+                0x8000_4005_u32 as i32,
             )));
             continue;
         }
@@ -131,7 +131,7 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
         last_err = Some(windows::core::Error::from(hr));
     }
     Err(last_err.unwrap_or(windows::core::Error::from_hresult(
-        windows::core::HRESULT(0x80040154u32 as i32),
+        windows::core::HRESULT(0x8004_0154_u32 as i32),
     )))
 }
 
@@ -212,8 +212,10 @@ impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for Notifier_Impl 
 /// `Send/Sync` is therefore sound for this holder.
 struct NotifierHolder(#[allow(dead_code)] IMMNotificationClient);
 #[cfg(windows)]
+// SAFETY: NotifierHolder is only constructed and accessed on the main STA thread; OnceLock only extends lifetime, no cross-thread access to the inner COM pointer.
 unsafe impl Send for NotifierHolder {}
 #[cfg(windows)]
+// SAFETY: See Send impl above.
 unsafe impl Sync for NotifierHolder {}
 #[cfg(windows)]
 static NOTIFIER_HOLDER: std::sync::OnceLock<NotifierHolder> = std::sync::OnceLock::new();
@@ -224,6 +226,7 @@ fn register_notification_client() {
         return;
     }
     unsafe {
+        // SAFETY: CoCreateInstance and RegisterEndpointNotificationCallback are valid on initialized STA thread; NOTIFIER_HOLDER ensures lifetime
         if let Ok(enumerator) =
             CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
         {

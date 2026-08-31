@@ -1,3 +1,5 @@
+//! Windows platform abstractions — COM, hooks, shell and autostart.
+
 pub mod autostart;
 pub mod com;
 pub mod dialog;

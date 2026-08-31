@@ -1,14 +1,16 @@
+//! Application entry — owns all runtime state and runs the message loop.
+
 pub mod handler;
 
 use std::time::{Duration, Instant};
 
 use crate::audio::{AudioBackend, RealBackend};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, Lang};
 use crate::platform::hook;
 use crate::ui::{format_tooltip, TrayWrapper, WheelState};
 use handler::MenuAction;
 
-/// App owns all runtime state. Generic over `AudioBackend` for test injection.
+/// App owns all runtime state. Generic over [`AudioBackend`] for test injection.
 pub struct App<B: AudioBackend = RealBackend> {
     cfg: AppConfig,
     backend: B,
@@ -24,13 +26,90 @@ pub struct App<B: AudioBackend = RealBackend> {
     _com: crate::platform::ComGuard,
 }
 
+/// Builder for [`App`] — allows injecting a custom backend or config for tests.
+///
+/// # Examples
+///
+/// ```
+/// use audio_switcher_rust::app::AppBuilder;
+/// use audio_switcher_rust::platform::ComGuard;
+/// // let com = ComGuard::init().unwrap();
+/// // let app = AppBuilder::new(com).build();
+/// ```
+pub struct AppBuilder {
+    com: crate::platform::ComGuard,
+    cfg: Option<AppConfig>,
+}
+
+impl AppBuilder {
+    /// Create a builder with the given COM guard.
+    #[must_use]
+    pub fn new(com: crate::platform::ComGuard) -> Self {
+        Self { com, cfg: None }
+    }
+
+    /// Override the config (otherwise loaded from disk).
+    #[must_use]
+    pub fn config(mut self, cfg: AppConfig) -> Self {
+        self.cfg = Some(cfg);
+        self
+    }
+
+    /// Build the [`App`] with the real backend.
+    #[must_use]
+    pub fn build(self) -> App<RealBackend> {
+        let cfg = self.cfg.unwrap_or_else(AppConfig::load);
+        let mut backend = RealBackend::new();
+        let mut tray = TrayWrapper::new(&cfg, &[], None, false);
+        let snap = backend.fetch_snapshot_clamped(&cfg);
+        let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
+        tray.rebuild_menu(&cfg, &snap.devices, default_id.as_deref(), snap.mute);
+        tray.update_tooltip(format_tooltip(
+            snap.default_device.as_ref(),
+            snap.volume,
+            snap.mute,
+            cfg.lang,
+        ));
+        tray.update_icon(snap.mute);
+        // Autostart side-effect only when config came from disk (not injected in tests).
+        if cfg.autostart && !crate::platform::is_autostart_enabled() {
+            // Fire-and-forget, mirroring App::with_backend behaviour.
+            std::thread::spawn(|| {
+                let _ = crate::platform::set_autostart(true);
+            });
+        }
+        App {
+            cfg,
+            backend,
+            tray,
+            wheel: WheelState::new(),
+            is_hover: false,
+            last_hover: Instant::now()
+                .checked_sub(Duration::from_secs(10))
+                .unwrap_or_else(Instant::now),
+            last_cursor_check: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+            last_cursor_over: false,
+            last_devices_rebuild: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+            hook: None,
+            hook_install_at: Instant::now() + Duration::from_millis(180),
+            _com: self.com,
+        }
+    }
+}
+
 impl App<RealBackend> {
+    /// Create a new `App` with the real Windows audio backend.
     pub fn new(com: crate::platform::ComGuard) -> Self {
         Self::with_backend(com, RealBackend::new())
     }
 }
 
 impl<B: AudioBackend> App<B> {
+    /// Create an `App` with an injected backend.
     pub fn with_backend(com: crate::platform::ComGuard, mut backend: B) -> Self {
         let cfg = AppConfig::load();
         let autostart = cfg.autostart;
@@ -43,7 +122,7 @@ impl<B: AudioBackend> App<B> {
         let snap = backend.fetch_snapshot_clamped(&cfg);
         let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
         tray.rebuild_menu(&cfg, &snap.devices, default_id.as_deref(), snap.mute);
-        tray.update_tooltip(format_tooltip(snap.default_device.as_ref(), snap.volume, snap.mute, &cfg.lang));
+        tray.update_tooltip(format_tooltip(snap.default_device.as_ref(), snap.volume, snap.mute, cfg.lang));
         tray.update_icon(snap.mute);
         Self {
             cfg,
@@ -51,10 +130,11 @@ impl<B: AudioBackend> App<B> {
             tray,
             wheel: WheelState::new(),
             is_hover: false,
-            last_hover: Instant::now() - Duration::from_secs(10),
-            last_cursor_check: Instant::now() - Duration::from_secs(1),
+            // checked_sub: Instant subtraction panics on underflow if clock jumps; use saturating fallback
+            last_hover: Instant::now().checked_sub(Duration::from_secs(10)).unwrap_or_else(Instant::now),
+            last_cursor_check: Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now),
             last_cursor_over: false,
-            last_devices_rebuild: Instant::now() - Duration::from_secs(1),
+            last_devices_rebuild: Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now),
             hook: None,
             hook_install_at: Instant::now() + Duration::from_millis(180),
             _com: com,
@@ -73,14 +153,14 @@ impl<B: AudioBackend> App<B> {
         #[cfg(windows)]
         if let Ok((vol, mute)) = self.backend.get_volume_and_mute() {
             let dev = self.backend.get_default_device();
-            self.tray.update_tooltip(format_tooltip(dev.as_ref(), vol, mute, &self.cfg.lang));
+            self.tray.update_tooltip(format_tooltip(dev.as_ref(), vol, mute, self.cfg.lang));
             self.tray.update_icon(mute);
             return;
         }
         let dev = self.backend.get_default_device();
         let vol = self.backend.get_volume().unwrap_or(0);
         let mute = self.backend.get_mute().unwrap_or(false);
-        self.tray.update_tooltip(format_tooltip(dev.as_ref(), vol, mute, &self.cfg.lang));
+        self.tray.update_tooltip(format_tooltip(dev.as_ref(), vol, mute, self.cfg.lang));
         self.tray.update_icon(mute);
     }
 
@@ -100,7 +180,7 @@ impl<B: AudioBackend> App<B> {
                     self.refresh_ui();
                 }
                 Err(e) => {
-                    crate::platform::shell::show_error(&format!("切换设备失败: {}", e));
+                    crate::platform::shell::show_error(&format!("切换设备失败: {e}"));
                 }
             },
             MenuAction::Mute => {
@@ -119,7 +199,7 @@ impl<B: AudioBackend> App<B> {
                 self.save_and_refresh(true);
             }
             MenuAction::VolCustom => {
-                if let Some(v) = crate::platform::prompt_custom_limit(&self.cfg.lang) {
+                if let Some(v) = crate::platform::prompt_custom_limit(self.cfg.lang) {
                     self.cfg.volume_limit = v;
                     self.cfg.volume_limit_enabled = true;
                     self.save_and_refresh(true);
@@ -150,11 +230,11 @@ impl<B: AudioBackend> App<B> {
                 }
             }
             MenuAction::LangZh => {
-                self.cfg.lang = "zh".into();
+                self.cfg.lang = Lang::Zh;
                 self.save_and_refresh(false);
             }
             MenuAction::LangEn => {
-                self.cfg.lang = "en".into();
+                self.cfg.lang = Lang::En;
                 self.save_and_refresh(false);
             }
             MenuAction::About => {
@@ -174,9 +254,10 @@ impl<B: AudioBackend> App<B> {
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE};
             let mut msg = MSG::default();
-            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+            // SAFETY: MSG is a plain POD out-param for PeekMessageW; &raw mut/const avoids reborrow lint
+            while PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&raw const msg);
+                DispatchMessageW(&raw const msg);
             }
         }
     }
@@ -198,18 +279,16 @@ impl<B: AudioBackend> App<B> {
                 self.last_hover = Instant::now();
                 self.wheel.clear();
             }
-            tray_icon::TrayIconEvent::Enter { .. } | tray_icon::TrayIconEvent::Move { .. } | tray_icon::TrayIconEvent::Click { .. } => {
+            tray_icon::TrayIconEvent::Enter { .. }
+            | tray_icon::TrayIconEvent::Move { .. }
+            | tray_icon::TrayIconEvent::Click { .. }
+            | tray_icon::TrayIconEvent::DoubleClick { .. } => {
                 self.is_hover = true;
                 self.last_hover = Instant::now();
                 self.wheel.clear();
             }
             tray_icon::TrayIconEvent::Leave { .. } => {
                 self.is_hover = false;
-                self.wheel.clear();
-            }
-            tray_icon::TrayIconEvent::DoubleClick { .. } => {
-                self.is_hover = true;
-                self.last_hover = Instant::now();
                 self.wheel.clear();
             }
             _ => {}
@@ -244,7 +323,8 @@ impl<B: AudioBackend> App<B> {
         let step = self.wheel.push(Instant::now(), self.cfg.wheel_acceleration, delta);
         let total = WheelState::total_step(delta, step);
         if let Ok(vol) = self.backend.get_volume() {
-            let new_vol = (vol as i32 + total).clamp(0, 100) as u32;
+            // vol is 0..=100; widen infallibly, clamp then cast_unsigned keeps within 0..=100
+            let new_vol = (i32::try_from(vol).unwrap_or(0) + total).clamp(0, 100).cast_unsigned();
             let clamped = crate::config::clamp_volume(new_vol, &self.cfg);
             let _ = self.backend.set_volume(clamped);
             self.update_tooltip_and_icon();
@@ -262,11 +342,13 @@ impl<B: AudioBackend> App<B> {
         let _ = self.backend.clamp_volume_if_needed(&self.cfg);
         self.refresh_ui();
     }
-    fn wait(&self) {
+    // `wait` has no self data; make it an associated function (fixes clippy::unused_self)
+    fn wait() {
         #[cfg(windows)]
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT};
             let timeout = if hook::peek_pending() { 8 } else { 500 };
+            // SAFETY: MsgWaitForMultipleObjectsEx with empty handle slice and QS_ALLINPUT is safe to call on UI thread
             let _ = MsgWaitForMultipleObjectsEx(Some(&[]), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         }
         #[cfg(not(windows))]
@@ -282,7 +364,7 @@ impl<B: AudioBackend> App<B> {
             self.poll_menu();
             self.poll_wheel();
             self.poll_devices();
-            self.wait();
+            Self::wait();
         }
     }
 }

@@ -1,24 +1,15 @@
 #![windows_subsystem = "windows"]
-
-mod app;
-mod audio;
-mod config;
-mod platform;
-mod ui;
-
-use platform::{ComGuard, SingleInstanceGuard};
+use audio_switcher_rust::platform::{ComGuard, SingleInstanceGuard};
 
 fn main() {
-    let _guard = match SingleInstanceGuard::new("audio-switcher-rust-single-instance-v1") {
-        Some(g) => g,
-        None => return,
+    let Some(_guard) = SingleInstanceGuard::new("audio-switcher-rust-single-instance-v1") else {
+        return;
     };
 
-    let com = match ComGuard::init() {
-        Some(c) => c,
-        None => return,
+    let Some(com) = ComGuard::init() else {
+        return;
     };
 
-    let app = app::App::new(com);
+    let app = audio_switcher_rust::app::App::new(com);
     app.run();
 }
