@@ -1,12 +1,12 @@
 [package]
 name = "audio-switcher-rust"
-version = "0.1.1"
-edition = "2021"
+version = "0.1.2"
+edition = "2024"
 description = "Audio Switcher Rust tray tool"
 authors = []
 repository = "https://github.com/Wildfire2282/audio-switcher-rust"
 license = "MIT"
-rust-version = "1.80"
+rust-version = "1.85"
 readme = "README.md"
 keywords = ["audio", "tray", "windows", "switcher"]
 categories = ["os::windows"]

@@ -4,7 +4,7 @@
 
 ## 系统要求
 - Windows 10 1809+ / Windows 11
-- MSRV 1.75（`rust-version` 声明于 `Cargo.toml`）
+- MSRV 1.85（`rust-version` 声明于 `Cargo.toml`，Edition 2024）
 
 ## 安装
 ```sh
@@ -34,7 +34,7 @@ cargo build --release
 
 ## 开发
 ```sh
-cargo test            # 20 passed + 1 ignored + 3 doctests
+cargo test            # 23 passed + 1 ignored + 3 doctests
 cargo clippy          # correctness=deny，pedantic=warn（FFI 噪声已 allow）
 cargo fmt --check
 cargo build --release
