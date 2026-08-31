@@ -26,7 +26,7 @@ Write-Host "[5] checking autostart disabled then enabled dry-run"
 
 # 6. DPI manifest check
 Write-Host "[6] checking manifest PerMonitorV2"
-if (!(Select-String -Path "audio-switcher.manifest" -Pattern "PerMonitorV2")) { throw "DPI manifest missing" }
+if (!(Select-String -Path "audio-switcher-rust.manifest" -Pattern "PerMonitorV2")) { throw "DPI manifest missing" }
 
 # 7. theme/log check: ensure verbose log default off via config test
 Write-Host "[7] theme & log paths verified"

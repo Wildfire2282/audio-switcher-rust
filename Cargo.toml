@@ -1,8 +1,8 @@
 [package]
-name = "audio-switcher"
+name = "audio-switcher-rust"
 version = "0.1.0"
 edition = "2021"
-description = "Audio Switcher tray tool"
+description = "Audio Switcher Rust tray tool"
 authors = []
 license = "MIT"
 
@@ -42,7 +42,7 @@ tempfile = "3.10"
 embed-manifest = "1.4"
 
 [[bin]]
-name = "audio-switcher"
+name = "audio-switcher-rust"
 path = "src/main.rs"
 
 [profile.release]

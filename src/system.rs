@@ -76,7 +76,7 @@ mod tests {
     use super::*;
     #[test]
     fn single_instance_name() {
-        let g = SingleInstanceGuard::new("audio-switcher-test-single-instance-unique-12345");
+        let g = SingleInstanceGuard::new("audio-switcher-rust-test-single-instance-unique-12345");
         assert!(g.is_some());
     }
 }

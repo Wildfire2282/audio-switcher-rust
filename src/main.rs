@@ -76,7 +76,7 @@ fn uninstall_wheel_hook() {
 
 fn main() {
     let _guard =
-        match system::SingleInstanceGuard::new("audio-switcher-tauri-single-instance-v1") {
+        match system::SingleInstanceGuard::new("audio-switcher-rust-single-instance-v1") {
             Some(g) => g,
             None => return,
         };

@@ -500,8 +500,8 @@ pub fn log_verbose(cfg: &AppConfig, msg: &str) {
         return;
     }
     let path = std::env::var("TEMP")
-        .map(|t| std::path::PathBuf::from(t).join("audio-switcher.log"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("audio-switcher.log"));
+        .map(|t| std::path::PathBuf::from(t).join("audio-switcher-rust.log"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("audio-switcher-rust.log"));
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
