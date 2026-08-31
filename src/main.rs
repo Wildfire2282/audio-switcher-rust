@@ -106,8 +106,6 @@ fn main() {
         let _ = system::set_autostart(true);
     }
 
-    tray::log_verbose(&cfg, "AudioSwitcher started");
-
     #[cfg(windows)]
     unsafe {
         let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -190,7 +188,6 @@ fn main() {
                             backend.get_default_device().as_ref().map(|d| d.id.as_str()),
                             new_mute,
                         );
-                        tray::log_verbose(&cfg, &format!("middle mute toggle -> {}", new_mute));
                     }
                     // 中键也视为悬停，保持滚轮可用
                     IS_HOVER.store(true, Ordering::SeqCst);
@@ -236,7 +233,6 @@ fn main() {
                 match backend.set_default_device(dev_id) {
                     Ok(()) => {
                         let _ = backend.clamp_volume_if_needed(&cfg);
-                        tray::log_verbose(&cfg, &format!("switch to {}", dev_id));
                         let devs = backend.enumerate_devices().unwrap_or_default();
                         let def = backend.get_default_device();
                         let def_id = def.as_ref().map(|d| d.id.as_str());
@@ -352,18 +348,6 @@ fn main() {
                             backend.get_mute().unwrap_or(false),
                         );
                     }
-                    "verbose_log" => {
-                        cfg.verbose_log = !cfg.verbose_log;
-                        let _ = cfg.save();
-                        tray::log_verbose(&cfg, &format!("verbose_log -> {}", cfg.verbose_log));
-                        let devs = backend.enumerate_devices().unwrap_or_default();
-                        tray_wrapper.rebuild_menu(
-                            &cfg,
-                            &devs,
-                            backend.get_default_device().as_ref().map(|d| d.id.as_str()),
-                            backend.get_mute().unwrap_or(false),
-                        );
-                    }
                     "open_mixer" => tray::open_volume_mixer(),
                     "open_sound" => tray::open_sound_settings(),
                     "autostart" => {
@@ -451,12 +435,6 @@ fn main() {
                     let new_vol = (vol as i32 + total).clamp(0, 100) as u32;
                     let clamped = config::clamp_volume(new_vol, &cfg);
                     let _ = backend.set_volume(clamped);
-                    tray::log_verbose(
-                        &cfg,
-                        &format!(
-                            "wheel delta {delta} step {step} total {total} vol {vol}->{clamped}"
-                        ),
-                    );
                     update_tooltip(&tray_wrapper, &backend, &cfg);
                 }
             }
@@ -473,7 +451,6 @@ fn main() {
                 backend.get_mute().unwrap_or(false),
             );
             update_tooltip(&tray_wrapper, &backend, &cfg);
-            tray::log_verbose(&cfg, "device change detected, menu rebuilt");
         }
 
         std::thread::sleep(Duration::from_millis(10));

@@ -15,8 +15,6 @@ pub struct AppConfig {
     pub volume_limit: u32,
     #[serde(default = "default_wheel_accel")]
     pub wheel_acceleration: bool,
-    #[serde(default = "default_verbose_log")]
-    pub verbose_log: bool,
     #[serde(default = "default_autostart")]
     pub autostart: bool,
 }
@@ -36,9 +34,6 @@ fn default_volume_limit() -> u32 {
 fn default_wheel_accel() -> bool {
     true
 }
-fn default_verbose_log() -> bool {
-    false
-}
 fn default_autostart() -> bool {
     true
 }
@@ -51,7 +46,6 @@ impl Default for AppConfig {
             volume_limit_enabled: default_volume_limit_enabled(),
             volume_limit: default_volume_limit(),
             wheel_acceleration: default_wheel_accel(),
-            verbose_log: default_verbose_log(),
             autostart: default_autostart(),
         }
     }
@@ -162,7 +156,6 @@ mod tests {
         assert!(c.volume_limit_enabled);
         assert_eq!(c.volume_limit, 25);
         assert!(c.wheel_acceleration);
-        assert!(!c.verbose_log);
         assert!(c.autostart);
         assert_eq!(c.version, 1);
     }

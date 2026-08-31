@@ -62,13 +62,6 @@ pub fn tr(key: &str, lang: &str) -> String {
                 "Wheel Acceleration".into()
             }
         }
-        "verbose_log" => {
-            if zh {
-                "详细日志".into()
-            } else {
-                "Verbose Log".into()
-            }
-        }
         "open_mixer" => {
             if zh {
                 "打开音量合成器".into()
@@ -471,26 +464,6 @@ pub fn is_dark_mode() -> bool {
 }
 
 // ------------------------------------------------------------
-// logging
-// ------------------------------------------------------------
-pub fn log_verbose(cfg: &AppConfig, msg: &str) {
-    if !cfg.verbose_log {
-        return;
-    }
-    let path = std::env::var("TEMP")
-        .map(|t| std::path::PathBuf::from(t).join("audio-switcher-rust.log"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("audio-switcher-rust.log"));
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(f, "[{:?}] {}", std::time::SystemTime::now(), msg);
-    }
-}
-
-// ------------------------------------------------------------
 // menu building
 // ------------------------------------------------------------
 pub struct MenuHandles {
@@ -568,18 +541,11 @@ pub fn build_menu(
         cfg.wheel_acceleration,
         None,
     );
-    let verbose = CheckMenuItem::with_id(
-        "verbose_log",
-        tr("verbose_log", lang),
-        true,
-        cfg.verbose_log,
-        None,
-    );
     let exp_sub = Submenu::with_id_and_items(
         "experimental",
         tr("experimental", lang),
         true,
-        &[&wheel, &verbose],
+        &[&wheel],
     )
     .unwrap();
 
