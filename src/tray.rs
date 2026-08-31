@@ -654,6 +654,7 @@ impl TrayWrapper {
             .with_icon(icon)
             .with_tooltip(tooltip)
             .with_menu(Box::new(handles.menu.clone()))
+            .with_menu_on_left_click(false)
             .build()
             .expect("tray build failed");
         Self { tray, handles }
