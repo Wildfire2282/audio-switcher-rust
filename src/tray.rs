@@ -11,7 +11,7 @@ use crate::config::AppConfig;
 use windows::core::PCWSTR;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
+    MessageBoxW, MB_ICONWARNING, MB_OK,
 };
 
 // ------------------------------------------------------------
@@ -753,7 +753,7 @@ pub fn show_about(lang: &str) {
             None,
             PCWSTR(wide.as_ptr()),
             PCWSTR(title.as_ptr()),
-            MB_OK | MB_ICONINFORMATION,
+            MB_OK,
         );
     }
 }
