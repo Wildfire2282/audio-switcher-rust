@@ -65,16 +65,10 @@ mod tests {
 
     #[test]
     fn parse_device() {
-        assert_eq!(
-            MenuAction::from_id("device_abc"),
-            MenuAction::Device("abc".into())
-        );
+        assert_eq!(MenuAction::from_id("device_abc"), MenuAction::Device("abc".into()));
         assert_eq!(MenuAction::from_id("mute"), MenuAction::Mute);
         assert_eq!(MenuAction::from_id("vol_25"), MenuAction::VolLimit(25));
         assert_eq!(MenuAction::from_id("vol_50"), MenuAction::VolLimit(50));
-        assert!(matches!(
-            MenuAction::from_id("unknown"),
-            MenuAction::Unknown(_)
-        ));
+        assert!(matches!(MenuAction::from_id("unknown"), MenuAction::Unknown(_)));
     }
 }

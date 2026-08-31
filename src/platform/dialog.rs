@@ -9,57 +9,42 @@ use crate::config::Lang;
 use crate::ui::i18n::tr;
 
 #[cfg(windows)]
-pub fn show_error_invalid_custom(lang: Lang) {
+pub(crate) fn show_error_invalid_custom(lang: Lang) {
     unsafe {
         let txt = tr("invalid_custom", lang);
         let wide: Vec<u16> = txt.encode_utf16().chain(std::iter::once(0)).collect();
         let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
-        MessageBoxW(
-            None,
-            PCWSTR(wide.as_ptr()),
-            PCWSTR(title.as_ptr()),
-            MB_OK | MB_ICONWARNING,
-        );
+        MessageBoxW(None, PCWSTR(wide.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
     }
 }
 
 #[cfg(not(windows))]
-pub fn show_error_invalid_custom(_lang: Lang) {}
+pub(crate) fn show_error_invalid_custom(_lang: Lang) {}
 
 #[cfg(windows)]
-pub fn show_autostart_error() {
+pub(crate) fn show_autostart_error() {
     unsafe {
         let msg: Vec<u16> = "设置开机自启失败\0".encode_utf16().collect();
         let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
-        MessageBoxW(
-            None,
-            PCWSTR(msg.as_ptr()),
-            PCWSTR(title.as_ptr()),
-            MB_OK | MB_ICONWARNING,
-        );
+        MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
     }
 }
 
 #[cfg(not(windows))]
-pub fn show_autostart_error() {}
+pub(crate) fn show_autostart_error() {}
 
 #[cfg(windows)]
 #[allow(dead_code)]
-pub fn show_msgbox(msg: &str) {
+pub(crate) fn show_msgbox(msg: &str) {
     unsafe {
         let wide: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
         let title: Vec<u16> = "Audio Switcher\0".encode_utf16().collect();
-        MessageBoxW(
-            None,
-            PCWSTR(wide.as_ptr()),
-            PCWSTR(title.as_ptr()),
-            MB_OK | MB_ICONWARNING,
-        );
+        MessageBoxW(None, PCWSTR(wide.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONWARNING);
     }
 }
 
 #[cfg(windows)]
-pub fn prompt_custom_limit(lang: Lang) -> Option<u32> {
+pub(crate) fn prompt_custom_limit(lang: Lang) -> Option<u32> {
     use parking_lot::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     use windows::core::w;
@@ -94,7 +79,8 @@ pub fn prompt_custom_limit(lang: Lang) -> Option<u32> {
                 let hinst = GetModuleHandleW(PCWSTR::null()).unwrap();
                 let hinst2 = windows::Win32::Foundation::HINSTANCE(hinst.0);
                 let is_zh = IS_ZH.load(Ordering::SeqCst);
-                let label_text = if is_zh { w!("输入 1-100 整数:") } else { w!("Enter 1-100:") };
+                let label_text =
+                    if is_zh { w!("输入 1-100 整数:") } else { w!("Enter 1-100:") };
                 let _ = CreateW(
                     WINDOW_EX_STYLE(0),
                     w!("STATIC"),
@@ -221,7 +207,8 @@ pub fn prompt_custom_limit(lang: Lang) -> Option<u32> {
             RegisterClassW(&wc);
             true
         });
-        let title = if lang == Lang::Zh { w!("自定义音量上限") } else { w!("Custom Volume Limit") };
+        let title =
+            if lang == Lang::Zh { w!("自定义音量上限") } else { w!("Custom Volume Limit") };
         let hwnd = match CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class_name,
@@ -266,13 +253,13 @@ pub fn prompt_custom_limit(lang: Lang) -> Option<u32> {
 }
 
 #[cfg(not(windows))]
-pub fn prompt_custom_limit(_lang: Lang) -> Option<u32> {
+pub(crate) fn prompt_custom_limit(_lang: Lang) -> Option<u32> {
     None
 }
 
 /// Backwards-compatible helper for callers that still pass `&str`.
 #[cfg(not(windows))]
 #[allow(dead_code)]
-pub fn prompt_custom_limit_str(_lang: &str) -> Option<u32> {
+pub(crate) fn prompt_custom_limit_str(_lang: &str) -> Option<u32> {
     None
 }

@@ -75,8 +75,9 @@ impl Drop for WheelHook {
             if raw != 0 {
                 // SAFETY: raw came from SetWindowsHookExW; balances exactly once.
                 unsafe {
-                    let hook =
-                        windows::Win32::UI::WindowsAndMessaging::HHOOK(raw as *mut std::ffi::c_void);
+                    let hook = windows::Win32::UI::WindowsAndMessaging::HHOOK(
+                        raw as *mut std::ffi::c_void,
+                    );
                     let _ = windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(hook);
                 }
             }
@@ -87,17 +88,17 @@ impl Drop for WheelHook {
 // ---- stateless helpers for App ----
 
 /// Take and clear the pending flag.
-pub fn take_pending() -> bool {
+pub(crate) fn take_pending() -> bool {
     WHEEL_PENDING.swap(false, Ordering::SeqCst)
 }
 
 /// Peek without clearing.
-pub fn peek_pending() -> bool {
+pub(crate) fn peek_pending() -> bool {
     WHEEL_PENDING.load(Ordering::SeqCst)
 }
 
 /// Take and clear accumulated delta.
-pub fn take_delta() -> i32 {
+pub(crate) fn take_delta() -> i32 {
     WHEEL_DELTA.swap(0, Ordering::SeqCst)
 }
 
@@ -105,7 +106,7 @@ pub fn take_delta() -> i32 {
 ///
 /// Returns `None` when the tray rect is unavailable.
 #[cfg(windows)]
-pub fn cursor_over_tray(wrapper: &crate::ui::tray::TrayWrapper) -> Option<bool> {
+pub(crate) fn cursor_over_tray(wrapper: &crate::ui::tray::TrayWrapper) -> Option<bool> {
     // SAFETY: GetCursorPos writes to POINT out-param; rect() is tray-icon API.
     unsafe {
         use windows::Win32::Foundation::POINT;
@@ -129,6 +130,6 @@ pub fn cursor_over_tray(wrapper: &crate::ui::tray::TrayWrapper) -> Option<bool> 
 
 #[cfg(not(windows))]
 /// Non-Windows stub.
-pub fn cursor_over_tray(_wrapper: &crate::ui::tray::TrayWrapper) -> Option<bool> {
+pub(crate) fn cursor_over_tray(_wrapper: &crate::ui::tray::TrayWrapper) -> Option<bool> {
     Some(false)
 }

@@ -32,10 +32,7 @@ pub enum AudioError {
 #[cfg(windows)]
 impl From<windows::core::Error> for AudioError {
     fn from(e: windows::core::Error) -> Self {
-        Self::Com {
-            hr: e.code().0,
-            msg: e.to_string(),
-        }
+        Self::Com { hr: e.code().0, msg: e.to_string() }
     }
 }
 
@@ -97,12 +94,7 @@ pub trait AudioBackend {
         let default_device = self.get_default_device();
         let (volume, mute) = self.get_volume_and_mute().unwrap_or((50, false));
         let volume = crate::config::clamp_volume(volume, cfg);
-        AudioSnapshot {
-            devices,
-            default_device,
-            volume,
-            mute,
-        }
+        AudioSnapshot { devices, default_device, volume, mute }
     }
 }
 
@@ -122,12 +114,7 @@ pub struct AudioSnapshot {
 
 impl Default for AudioSnapshot {
     fn default() -> Self {
-        Self {
-            devices: Vec::new(),
-            default_device: None,
-            volume: 50,
-            mute: false,
-        }
+        Self { devices: Vec::new(), default_device: None, volume: 50, mute: false }
     }
 }
 
@@ -145,20 +132,14 @@ mod tests {
 
     #[test]
     fn mock_enumerate_cache() {
-        let devs = vec![AudioDevice {
-            id: "a".into(),
-            name: "Speaker".into(),
-        }];
+        let devs = vec![AudioDevice { id: "a".into(), name: "Speaker".into() }];
         let mut m = MockBackend::new(devs.clone(), Some("a".into()));
         let first = m.enumerate_devices().unwrap();
         assert_eq!(first.len(), 1);
         let count_before = m.enumerate_count;
         let second = m.enumerate_devices().unwrap();
         assert_eq!(second.len(), 1);
-        assert_eq!(
-            m.enumerate_count, count_before,
-            "should hit cache within 800ms"
-        );
+        assert_eq!(m.enumerate_count, count_before, "should hit cache within 800ms");
         std::thread::sleep(std::time::Duration::from_millis(850));
         let _third = m.enumerate_devices().unwrap();
         assert_eq!(m.enumerate_count, count_before + 1);
@@ -166,10 +147,7 @@ mod tests {
 
     #[test]
     fn mock_empty_keeps_current() {
-        let devs = vec![AudioDevice {
-            id: "a".into(),
-            name: "Sp".into(),
-        }];
+        let devs = vec![AudioDevice { id: "a".into(), name: "Sp".into() }];
         let mut m = MockBackend::new(devs.clone(), Some("a".into()));
         let _ = m.enumerate_devices().unwrap();
         m.devices = vec![];
@@ -180,11 +158,7 @@ mod tests {
 
     #[test]
     fn clamp_via_backend() {
-        let cfg = AppConfig {
-            volume_limit: 25,
-            volume_limit_enabled: true,
-            ..Default::default()
-        };
+        let cfg = AppConfig { volume_limit: 25, volume_limit_enabled: true, ..Default::default() };
         let mut m = MockBackend::new(vec![], None);
         m.volume = 80;
         m.clamp_volume_if_needed(&cfg).unwrap();
@@ -194,14 +168,8 @@ mod tests {
     #[test]
     fn set_default_device_mock() {
         let devs = vec![
-            AudioDevice {
-                id: "a".into(),
-                name: "A".into(),
-            },
-            AudioDevice {
-                id: "b".into(),
-                name: "B".into(),
-            },
+            AudioDevice { id: "a".into(), name: "A".into() },
+            AudioDevice { id: "b".into(), name: "B".into() },
         ];
         let mut m = MockBackend::new(devs, Some("a".into()));
         m.set_default_device("b").unwrap();
@@ -212,10 +180,7 @@ mod tests {
     #[test]
     #[ignore]
     fn integration_real_mock() {
-        let devs = vec![AudioDevice {
-            id: "x".into(),
-            name: "X".into(),
-        }];
+        let devs = vec![AudioDevice { id: "x".into(), name: "X".into() }];
         let mut backend: Box<dyn AudioBackend> = Box::new(MockBackend::new(devs, None));
         let list = backend.enumerate_devices().unwrap();
         assert_eq!(list.len(), 1);

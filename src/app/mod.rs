@@ -122,7 +122,12 @@ impl<B: AudioBackend> App<B> {
         let snap = backend.fetch_snapshot_clamped(&cfg);
         let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
         tray.rebuild_menu(&cfg, &snap.devices, default_id.as_deref(), snap.mute);
-        tray.update_tooltip(format_tooltip(snap.default_device.as_ref(), snap.volume, snap.mute, cfg.lang));
+        tray.update_tooltip(format_tooltip(
+            snap.default_device.as_ref(),
+            snap.volume,
+            snap.mute,
+            cfg.lang,
+        ));
         tray.update_icon(snap.mute);
         Self {
             cfg,
@@ -131,10 +136,16 @@ impl<B: AudioBackend> App<B> {
             wheel: WheelState::new(),
             is_hover: false,
             // checked_sub: Instant subtraction panics on underflow if clock jumps; use saturating fallback
-            last_hover: Instant::now().checked_sub(Duration::from_secs(10)).unwrap_or_else(Instant::now),
-            last_cursor_check: Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now),
+            last_hover: Instant::now()
+                .checked_sub(Duration::from_secs(10))
+                .unwrap_or_else(Instant::now),
+            last_cursor_check: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
             last_cursor_over: false,
-            last_devices_rebuild: Instant::now().checked_sub(Duration::from_secs(1)).unwrap_or_else(Instant::now),
+            last_devices_rebuild: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
             hook: None,
             hook_install_at: Instant::now() + Duration::from_millis(180),
             _com: com,
@@ -252,7 +263,9 @@ impl<B: AudioBackend> App<B> {
     fn pump_messages() {
         #[cfg(windows)]
         unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE};
+            use windows::Win32::UI::WindowsAndMessaging::{
+                DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+            };
             let mut msg = MSG::default();
             // SAFETY: MSG is a plain POD out-param for PeekMessageW; &raw mut/const avoids reborrow lint
             while PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -268,9 +281,15 @@ impl<B: AudioBackend> App<B> {
     }
     fn poll_tray(&mut self) {
         let tray_rx = tray_icon::TrayIconEvent::receiver();
-        let Ok(event) = tray_rx.try_recv() else { return; };
+        let Ok(event) = tray_rx.try_recv() else {
+            return;
+        };
         match event {
-            tray_icon::TrayIconEvent::Click { button: tray_icon::MouseButton::Middle, button_state: tray_icon::MouseButtonState::Up, .. } => {
+            tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Middle,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } => {
                 if let Ok(m) = self.backend.get_mute() {
                     let _ = self.backend.set_mute(!m);
                     self.refresh_ui();
@@ -297,13 +316,18 @@ impl<B: AudioBackend> App<B> {
     fn poll_cursor(&mut self) {
         #[cfg(windows)]
         {
-            let need = hook::peek_pending() || self.is_hover || self.last_hover.elapsed() < Duration::from_millis(2500);
+            let need = hook::peek_pending()
+                || self.is_hover
+                || self.last_hover.elapsed() < Duration::from_millis(2500);
             if need && self.last_cursor_check.elapsed() > Duration::from_millis(80) {
                 self.last_cursor_check = Instant::now();
                 if let Some(over) = hook::cursor_over_tray(&self.tray) {
                     self.last_cursor_over = over;
                     if over {
-                        if !self.is_hover { self.is_hover = true; self.wheel.clear(); }
+                        if !self.is_hover {
+                            self.is_hover = true;
+                            self.wheel.clear();
+                        }
                         self.last_hover = Instant::now();
                     }
                 }
@@ -313,12 +337,22 @@ impl<B: AudioBackend> App<B> {
     }
     fn poll_menu(&mut self) {
         let menu_rx = muda::MenuEvent::receiver();
-        if let Ok(event) = menu_rx.try_recv() { self.handle_menu(&event.id.0); }
+        if let Ok(event) = menu_rx.try_recv() {
+            self.handle_menu(&event.id.0);
+        }
     }
     fn poll_wheel(&mut self) {
-        if !hook::take_pending() { return; }
+        if !hook::take_pending() {
+            return;
+        }
         let delta = hook::take_delta();
-        if !(self.is_hover || self.last_hover.elapsed() < Duration::from_millis(2500) || self.last_cursor_over) || delta == 0 { return; }
+        if !(self.is_hover
+            || self.last_hover.elapsed() < Duration::from_millis(2500)
+            || self.last_cursor_over)
+            || delta == 0
+        {
+            return;
+        }
         self.last_hover = Instant::now();
         let step = self.wheel.push(Instant::now(), self.cfg.wheel_acceleration, delta);
         let total = WheelState::total_step(delta, step);
@@ -346,10 +380,13 @@ impl<B: AudioBackend> App<B> {
     fn wait() {
         #[cfg(windows)]
         unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT};
+            use windows::Win32::UI::WindowsAndMessaging::{
+                MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
+            };
             let timeout = if hook::peek_pending() { 8 } else { 500 };
             // SAFETY: MsgWaitForMultipleObjectsEx with empty handle slice and QS_ALLINPUT is safe to call on UI thread
-            let _ = MsgWaitForMultipleObjectsEx(Some(&[]), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            let _ =
+                MsgWaitForMultipleObjectsEx(Some(&[]), timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         }
         #[cfg(not(windows))]
         std::thread::sleep(Duration::from_millis(if hook::peek_pending() { 8 } else { 24 }));

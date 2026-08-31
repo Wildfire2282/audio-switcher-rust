@@ -1,6 +1,5 @@
-
 use super::{AudioBackend, AudioDevice, AudioError, AudioSnapshot};
-use crate::config::{AppConfig, clamp_volume};
+use crate::config::{clamp_volume, AppConfig};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
@@ -38,29 +37,12 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
     // 每个 CLSID 绑定其规范 IID 与主偏移，仅主偏移 S_OK 才算成功，
     // 避免对 Vista 客户端先试 13 误调 SetEndpointVisibility 造成的假成功。
     const IID_IPOLICYCONFIG: GUID = GUID::from_u128(0xf8679f50_850a_41cf_9c72_430f290290c8);
-    const IID_IPOLICYCONFIG_VISTA: GUID =
-        GUID::from_u128(0x568b9108_44bf_40b4_9006_86afe5b5a620);
+    const IID_IPOLICYCONFIG_VISTA: GUID = GUID::from_u128(0x568b9108_44bf_40b4_9006_86afe5b5a620);
     const CANDIDATES: &[(GUID, GUID, usize)] = &[
-        (
-            GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9),
-            IID_IPOLICYCONFIG,
-            13,
-        ),
-        (
-            GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2ea9),
-            IID_IPOLICYCONFIG,
-            13,
-        ),
-        (
-            GUID::from_u128(0x294935ce_f637_4e7c_a41b_ab255460b862),
-            IID_IPOLICYCONFIG_VISTA,
-            12,
-        ),
-        (
-            GUID::from_u128(0x294935ce_f588_4bd5_9f8c_bab13166b487),
-            IID_IPOLICYCONFIG_VISTA,
-            12,
-        ),
+        (GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9), IID_IPOLICYCONFIG, 13),
+        (GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2ea9), IID_IPOLICYCONFIG, 13),
+        (GUID::from_u128(0x294935ce_f637_4e7c_a41b_ab255460b862), IID_IPOLICYCONFIG_VISTA, 12),
+        (GUID::from_u128(0x294935ce_f588_4bd5_9f8c_bab13166b487), IID_IPOLICYCONFIG_VISTA, 12),
     ];
     type QiFn = unsafe extern "system" fn(
         *mut std::ffi::c_void,
@@ -71,8 +53,7 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
     let wide: Vec<u16> = device_id.encode_utf16().chain(std::iter::once(0)).collect();
     let mut last_err: Option<windows::core::Error> = None;
     for &(clsid, iid, primary_off) in CANDIDATES {
-        let instance: windows::core::Result<IUnknown> =
-            CoCreateInstance(&clsid, None, CLSCTX_ALL);
+        let instance: windows::core::Result<IUnknown> = CoCreateInstance(&clsid, None, CLSCTX_ALL);
         let Ok(unk) = instance else {
             if let Err(e) = instance {
                 last_err = Some(e);
@@ -93,8 +74,7 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
                         unsafe { std::mem::transmute(*vtbl_iface.add(primary_off)) };
                     let hr = unsafe { func(iface, PCWSTR(wide.as_ptr()), role) };
                     // Release iface
-                    let rel: ReleaseFn =
-                        unsafe { std::mem::transmute(*vtbl_iface.add(2)) };
+                    let rel: ReleaseFn = unsafe { std::mem::transmute(*vtbl_iface.add(2)) };
                     unsafe { rel(iface) };
                     if hr.is_ok() {
                         return Ok(());
@@ -107,8 +87,7 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
                 // QI 成功但 vtbl 空，兜底 Release
                 let vtbl_iface = unsafe { *(iface as *mut *mut *mut std::ffi::c_void) };
                 if !vtbl_iface.is_null() {
-                    let rel: ReleaseFn =
-                        unsafe { std::mem::transmute(*vtbl_iface.add(2)) };
+                    let rel: ReleaseFn = unsafe { std::mem::transmute(*vtbl_iface.add(2)) };
                     unsafe { rel(iface) };
                 }
             }
@@ -122,17 +101,16 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
             )));
             continue;
         }
-        let func: SetDefaultEndpointFn =
-            unsafe { std::mem::transmute(*vtbl.add(primary_off)) };
+        let func: SetDefaultEndpointFn = unsafe { std::mem::transmute(*vtbl.add(primary_off)) };
         let hr = unsafe { func(raw_unk, PCWSTR(wide.as_ptr()), role) };
         if hr.is_ok() {
             return Ok(());
         }
         last_err = Some(windows::core::Error::from(hr));
     }
-    Err(last_err.unwrap_or(windows::core::Error::from_hresult(
-        windows::core::HRESULT(0x8004_0154_u32 as i32),
-    )))
+    Err(last_err.unwrap_or(windows::core::Error::from_hresult(windows::core::HRESULT(
+        0x8004_0154_u32 as i32,
+    ))))
 }
 
 #[cfg(windows)]
@@ -248,11 +226,7 @@ pub struct RealBackend {
 #[cfg(windows)]
 impl RealBackend {
     pub fn new() -> Self {
-        let s = Self {
-            cached: None,
-            cache_time: None,
-            cached_enumerator: None,
-        };
+        let s = Self { cached: None, cache_time: None, cached_enumerator: None };
         // register once per process
         static REGISTERED: AtomicBool = AtomicBool::new(false);
         if !REGISTERED.swap(true, AtomicOrdering::SeqCst) {
@@ -268,7 +242,9 @@ impl RealBackend {
     }
 
     /// 获取或创建缓存的 IMMDeviceEnumerator，减少 CoCreateInstance 次数
-    fn enumerator_mut(&mut self) -> windows::core::Result<windows::Win32::Media::Audio::IMMDeviceEnumerator> {
+    fn enumerator_mut(
+        &mut self,
+    ) -> windows::core::Result<windows::Win32::Media::Audio::IMMDeviceEnumerator> {
         if let Some(e) = &self.cached_enumerator {
             return Ok(e.clone());
         }
@@ -362,12 +338,9 @@ impl RealBackend {
             let dev = enumerator
                 .GetDefaultAudioEndpoint(eRender, eMultimedia)
                 .map_err(AudioError::from)?;
-            let vol: IAudioEndpointVolume = dev
-                .Activate(CLSCTX_ALL, None)
-                .map_err(AudioError::from)?;
-            let scalar = vol
-                .GetMasterVolumeLevelScalar()
-                .map_err(AudioError::from)?;
+            let vol: IAudioEndpointVolume =
+                dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
+            let scalar = vol.GetMasterVolumeLevelScalar().map_err(AudioError::from)?;
             let m = vol.GetMute().map_err(AudioError::from)?;
             Ok(((scalar * 100.0).round() as u32, m.as_bool()))
         }
@@ -391,9 +364,7 @@ impl RealBackend {
             let collection: IMMDeviceCollection = enumerator
                 .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
                 .map_err(AudioError::from)?;
-            let count = collection
-                .GetCount()
-                .map_err(AudioError::from)?;
+            let count = collection.GetCount().map_err(AudioError::from)?;
             let mut devices = Vec::new();
             for i in 0..count {
                 if let Ok(dev) = collection.Item(i) {
@@ -492,7 +463,8 @@ impl AudioBackend for RealBackend {
             let dev = enumerator
                 .GetDefaultAudioEndpoint(eRender, eMultimedia)
                 .map_err(AudioError::from)?;
-            let vol: IAudioEndpointVolume = dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
+            let vol: IAudioEndpointVolume =
+                dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
             let scalar = vol.GetMasterVolumeLevelScalar().map_err(AudioError::from)?;
             let m = vol.GetMute().map_err(AudioError::from)?;
             Ok(((scalar * 100.0).round() as u32, m.as_bool()))
@@ -506,9 +478,7 @@ impl AudioBackend for RealBackend {
         false
     }
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
-        let enumerator = self
-            .enumerator_mut()
-            .map_err(AudioError::from)?;
+        let enumerator = self.enumerator_mut().map_err(AudioError::from)?;
         self.enumerate_devices_inner(&enumerator)
     }
 
@@ -519,9 +489,7 @@ impl AudioBackend for RealBackend {
             } else {
                 Self::get_enumerator().ok()?
             };
-            let dev = enumerator
-                .GetDefaultAudioEndpoint(eRender, eMultimedia)
-                .ok()?;
+            let dev = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia).ok()?;
             let id = Self::device_id(&dev).ok()?;
             let name = Self::device_friendly_name(&dev);
             Some(AudioDevice { id, name })
@@ -548,15 +516,12 @@ impl AudioBackend for RealBackend {
     fn set_volume(&mut self, volume: u32) -> Result<(), AudioError> {
         let v = volume.min(100) as f32 / 100.0;
         unsafe {
-            let enumerator = self
-                .enumerator_mut()
-                .map_err(AudioError::from)?;
+            let enumerator = self.enumerator_mut().map_err(AudioError::from)?;
             let dev = enumerator
                 .GetDefaultAudioEndpoint(eRender, eMultimedia)
                 .map_err(AudioError::from)?;
-            let vol: IAudioEndpointVolume = dev
-                .Activate(CLSCTX_ALL, None)
-                .map_err(AudioError::from)?;
+            let vol: IAudioEndpointVolume =
+                dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
             let mut last_err: Option<windows::core::Error> = None;
             for _ in 0..2 {
                 match vol.SetMasterVolumeLevelScalar(v, std::ptr::null()) {
@@ -578,15 +543,12 @@ impl AudioBackend for RealBackend {
 
     fn set_mute(&mut self, mute: bool) -> Result<(), AudioError> {
         unsafe {
-            let enumerator = self
-                .enumerator_mut()
-                .map_err(AudioError::from)?;
+            let enumerator = self.enumerator_mut().map_err(AudioError::from)?;
             let dev = enumerator
                 .GetDefaultAudioEndpoint(eRender, eMultimedia)
                 .map_err(AudioError::from)?;
-            let vol: IAudioEndpointVolume = dev
-                .Activate(CLSCTX_ALL, None)
-                .map_err(AudioError::from)?;
+            let vol: IAudioEndpointVolume =
+                dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
             for _ in 0..2 {
                 match vol.SetMute(mute, std::ptr::null()) {
                     Ok(()) => return Ok(()),
@@ -612,8 +574,6 @@ impl AudioBackend for RealBackend {
     }
 }
 
-
-
 #[cfg(not(windows))]
 use windows::Win32::Foundation::HANDLE;
 #[cfg(not(windows))]
@@ -624,10 +584,7 @@ pub struct RealBackend {
 #[cfg(not(windows))]
 impl RealBackend {
     pub fn new() -> Self {
-        Self {
-            cached: None,
-            cache_time: None,
-        }
+        Self { cached: None, cache_time: None }
     }
     pub fn clear_cache(&mut self) {
         self.cached = None;

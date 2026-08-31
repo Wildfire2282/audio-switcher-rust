@@ -250,8 +250,7 @@ impl AppConfig {
         // SAFETY: AppConfig is always serializable.
         let json = serde_json::to_string_pretty(self).expect("AppConfig serialization never fails");
         let tmp_path = {
-            static COUNTER: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(0);
+            static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let file_name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -337,21 +336,14 @@ mod tests {
 
     #[test]
     fn clamp_enabled() {
-        let cfg = AppConfig {
-            volume_limit_enabled: true,
-            volume_limit: 25,
-            ..Default::default()
-        };
+        let cfg = AppConfig { volume_limit_enabled: true, volume_limit: 25, ..Default::default() };
         assert_eq!(clamp_volume(30, &cfg), 25);
         assert_eq!(clamp_volume(20, &cfg), 20);
     }
 
     #[test]
     fn clamp_disabled() {
-        let cfg = AppConfig {
-            volume_limit_enabled: false,
-            ..Default::default()
-        };
+        let cfg = AppConfig { volume_limit_enabled: false, ..Default::default() };
         assert_eq!(clamp_volume(80, &cfg), 80);
     }
 
@@ -369,11 +361,7 @@ mod tests {
     fn persistence_with_tempfile() {
         let dir = tempdir().unwrap();
         let path = AppConfig::config_path_for(dir.path());
-        let cfg = AppConfig {
-            lang: Lang::En,
-            volume_limit: 50,
-            ..Default::default()
-        };
+        let cfg = AppConfig { lang: Lang::En, volume_limit: 50, ..Default::default() };
         cfg.save_to(&path).unwrap();
         let loaded = AppConfig::load_from(&path);
         assert_eq!(loaded.lang, Lang::En);

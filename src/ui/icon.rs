@@ -8,8 +8,7 @@ use parking_lot::Mutex;
 use tray_icon::Icon;
 
 /// Cached icons — index 0 = unmuted, 1 = muted.
-static ICON_CACHE: LazyLock<Mutex<[Option<Icon>; 2]>> =
-    LazyLock::new(|| Mutex::new([None, None]));
+static ICON_CACHE: LazyLock<Mutex<[Option<Icon>; 2]>> = LazyLock::new(|| Mutex::new([None, None]));
 
 /// Create (or fetch from cache) the tray icon for `muted`.
 #[must_use]

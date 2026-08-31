@@ -15,9 +15,7 @@ impl WheelState {
     /// Create an empty state.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            history: VecDeque::new(),
-        }
+        Self { history: VecDeque::new() }
     }
 
     /// Push a wheel tick at `now`, returning the step percent `1`, `2`, or `5`.

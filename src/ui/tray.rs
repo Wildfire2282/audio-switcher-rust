@@ -12,7 +12,12 @@ pub struct TrayWrapper {
 }
 
 impl TrayWrapper {
-    pub fn new(cfg: &AppConfig, devices: &[AudioDevice], default_id: Option<&str>, muted: bool) -> Self {
+    pub fn new(
+        cfg: &AppConfig,
+        devices: &[AudioDevice],
+        default_id: Option<&str>,
+        muted: bool,
+    ) -> Self {
         let handles = build_menu(cfg, devices, default_id, muted);
         let icon = make_icon(muted);
         let tooltip = format_tooltip(

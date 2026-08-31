@@ -78,30 +78,20 @@ pub fn build_menu(
         cfg.wheel_acceleration,
         None,
     );
-    let exp_sub = Submenu::with_id_and_items("experimental", tr("experimental", lang), true, &[&wheel])
-        .expect("experimental submenu");
+    let exp_sub =
+        Submenu::with_id_and_items("experimental", tr("experimental", lang), true, &[&wheel])
+            .expect("experimental submenu");
 
     let open_mixer = MenuItem::with_id("open_mixer", tr("open_mixer", lang), true, None);
     let open_sound = MenuItem::with_id("open_sound", tr("open_sound", lang), true, None);
     let autostart =
         CheckMenuItem::with_id("autostart", tr("autostart", lang), true, cfg.autostart, None);
-    let lang_zh = CheckMenuItem::with_id(
-        "lang_zh",
-        tr("chinese", lang),
-        true,
-        cfg.lang == Lang::Zh,
-        None,
-    );
-    let lang_en = CheckMenuItem::with_id(
-        "lang_en",
-        tr("english", lang),
-        true,
-        cfg.lang == Lang::En,
-        None,
-    );
-    let lang_sub =
-        Submenu::with_id_and_items("language", "Language", true, &[&lang_zh, &lang_en])
-            .expect("language submenu");
+    let lang_zh =
+        CheckMenuItem::with_id("lang_zh", tr("chinese", lang), true, cfg.lang == Lang::Zh, None);
+    let lang_en =
+        CheckMenuItem::with_id("lang_en", tr("english", lang), true, cfg.lang == Lang::En, None);
+    let lang_sub = Submenu::with_id_and_items("language", "Language", true, &[&lang_zh, &lang_en])
+        .expect("language submenu");
     let about = MenuItem::with_id("about", tr("about", lang), true, None);
     let exit = MenuItem::with_id("exit", tr("exit", lang), true, None);
 

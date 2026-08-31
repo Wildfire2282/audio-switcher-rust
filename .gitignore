@@ -2,6 +2,10 @@
 /target/
 **/*.rs.bk
 
+# Agent / local cache
+/.opencode/
+/.tmp/
+
 # Tauri / Node (预留)
 node_modules/
 dist/
