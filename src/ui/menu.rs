@@ -72,13 +72,18 @@ pub fn build_menu(
         cfg.volume_limit == 50 && cfg.volume_limit_enabled,
         None,
     );
-    let vol_custom =
-        MenuItem::with_id("vol_custom", tr("custom", lang), cfg.volume_limit_enabled, None);
+    let vol_75 = CheckMenuItem::with_id(
+        "vol_75",
+        "75%",
+        cfg.volume_limit_enabled,
+        cfg.volume_limit == 75 && cfg.volume_limit_enabled,
+        None,
+    );
     let vol_sub = Submenu::with_id_and_items(
         "volume_limit",
         tr("volume_limit", lang),
         true,
-        &[&vol_enabled, &PredefinedMenuItem::separator(), &vol_25, &vol_50, &vol_custom],
+        &[&vol_enabled, &PredefinedMenuItem::separator(), &vol_25, &vol_50, &vol_75],
     )
     .expect("volume_limit submenu");
 

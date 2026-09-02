@@ -233,13 +233,6 @@ impl<B: AudioBackend> App<B> {
                 self.cfg.volume_limit_enabled = true;
                 self.save_and_refresh(true);
             }
-            MenuAction::VolCustom => {
-                if let Some(v) = crate::platform::prompt_custom_limit(self.cfg.lang) {
-                    self.cfg.volume_limit = v;
-                    self.cfg.volume_limit_enabled = true;
-                    self.save_and_refresh(true);
-                }
-            }
             MenuAction::WheelAccel => {
                 self.cfg.wheel_acceleration = !self.cfg.wheel_acceleration;
                 if let Err(e) = self.cfg.save_to(&AppConfig::config_path()) {

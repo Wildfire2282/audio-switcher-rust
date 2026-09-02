@@ -39,13 +39,6 @@ pub fn tr(key: &str, lang: Lang) -> String {
                 "Enabled".into()
             }
         }
-        "custom" => {
-            if zh {
-                "自定义...".into()
-            } else {
-                "Custom...".into()
-            }
-        }
         "wheel_accel" => {
             if zh {
                 "滚轮加速".into()
@@ -95,13 +88,6 @@ pub fn tr(key: &str, lang: Lang) -> String {
                 "静音".into()
             } else {
                 "Muted".into()
-            }
-        }
-        "invalid_custom" => {
-            if zh {
-                "请输入 1-100 的整数".into()
-            } else {
-                "Please enter integer 1-100".into()
             }
         }
         "about_text" => {

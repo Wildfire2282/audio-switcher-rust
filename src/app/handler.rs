@@ -11,8 +11,6 @@ pub enum MenuAction {
     VolEnabled,
     /// Set limit to `u32` percent.
     VolLimit(u32),
-    /// Prompt for a custom limit.
-    VolCustom,
     /// Toggle wheel acceleration.
     WheelAccel,
     /// Open volume mixer.
@@ -48,7 +46,7 @@ impl MenuAction {
             "vol_enabled" => Self::VolEnabled,
             "vol_25" => Self::VolLimit(25),
             "vol_50" => Self::VolLimit(50),
-            "vol_custom" => Self::VolCustom,
+            "vol_75" => Self::VolLimit(75),
             "wheel_accel" => Self::WheelAccel,
             "open_mixer" => Self::OpenMixer,
             "open_sound" => Self::OpenSound,
@@ -72,6 +70,7 @@ mod tests {
         assert_eq!(MenuAction::from_id("mute"), MenuAction::Mute);
         assert_eq!(MenuAction::from_id("vol_25"), MenuAction::VolLimit(25));
         assert_eq!(MenuAction::from_id("vol_50"), MenuAction::VolLimit(50));
+        assert_eq!(MenuAction::from_id("vol_75"), MenuAction::VolLimit(75));
         assert!(matches!(MenuAction::from_id("unknown"), MenuAction::Unknown(_)));
     }
 }
