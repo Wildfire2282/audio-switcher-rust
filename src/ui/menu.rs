@@ -5,6 +5,53 @@ use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use crate::audio::AudioDevice;
 use crate::config::{AppConfig, Lang};
 use crate::ui::i18n::tr;
+use crate::ui::text::{MAX_LABEL_CHARS, truncate_label};
+
+/// Prefix for per-device menu item IDs; the remainder is the WASAPI endpoint ID.
+pub const DEVICE_PREFIX: &str = "device_";
+/// Volume-limit presets offered in the submenu (percent).
+pub const VOLUME_PRESETS: &[u32] = &[25, 50, 75];
+
+/// Menu item IDs shared with [`crate::app::handler::MenuAction::from_id`].
+pub mod id {
+    /// Toggle global mute.
+    pub const MUTE: &str = "mute";
+    /// Toggle volume-limit enabled.
+    pub const VOL_ENABLED: &str = "vol_enabled";
+    /// Toggle wheel acceleration.
+    pub const WHEEL_ACCEL: &str = "wheel_accel";
+    /// Open volume mixer.
+    pub const OPEN_MIXER: &str = "open_mixer";
+    /// Open sound settings.
+    pub const OPEN_SOUND: &str = "open_sound";
+    /// Toggle autostart.
+    pub const AUTOSTART: &str = "autostart";
+    /// Switch language to Chinese.
+    pub const LANG_ZH: &str = "lang_zh";
+    /// Switch language to English.
+    pub const LANG_EN: &str = "lang_en";
+    /// Open about URL.
+    pub const ABOUT: &str = "about";
+    /// Exit process.
+    pub const EXIT: &str = "exit";
+
+    /// Build the menu ID for a volume-limit preset, e.g. `vol_25`.
+    #[must_use]
+    pub fn vol_preset(value: u32) -> String {
+        format!("vol_{value}")
+    }
+
+    /// Parse a `vol_N` ID back into `N`, or `None`.
+    ///
+    /// Only the presets in [`VOLUME_PRESETS`](super::VOLUME_PRESETS) are accepted
+    /// so parsing stays an exact inverse of [`vol_preset`] for IDs this menu
+    /// emits; anything else falls through to `Unknown` in the handler.
+    #[must_use]
+    pub fn parse_vol_preset(id: &str) -> Option<u32> {
+        let v = id.strip_prefix("vol_")?.parse::<u32>().ok()?;
+        super::VOLUME_PRESETS.contains(&v).then_some(v)
+    }
+}
 
 /// Handles for the current menu — the `Menu` must be kept alive.
 pub struct MenuHandles {
@@ -24,24 +71,15 @@ pub fn build_menu(
 ) -> MenuHandles {
     let lang = cfg.lang;
 
-    // Sanitize device id for muda (no NUL/control) and truncate long names.
+    // Sanitize device id for muda (no NUL/control).
     let sanitize_id = |id: &str| -> String { id.replace(['\0', '\n', '\r'], "_") };
-    let truncate_name = |name: &str| -> String {
-        let sanitized = name.replace(['\r', '\n', '\t'], " ");
-        if sanitized.chars().count() > 60 {
-            let t: String = sanitized.chars().take(58).collect();
-            format!("{t}…")
-        } else {
-            sanitized
-        }
-    };
     let device_items: Vec<CheckMenuItem> = devices
         .iter()
         .map(|dev| {
             let checked = default_id == Some(dev.id.as_str());
             CheckMenuItem::with_id(
-                format!("device_{}", sanitize_id(&dev.id)),
-                truncate_name(&dev.name),
+                format!("{DEVICE_PREFIX}{}", sanitize_id(&dev.id)),
+                truncate_label(&dev.name, MAX_LABEL_CHARS),
                 true,
                 checked,
                 None,
@@ -49,46 +87,36 @@ pub fn build_menu(
         })
         .collect();
 
-    let mute = CheckMenuItem::with_id("mute", tr("mute", lang), true, muted, None);
+    let mute = CheckMenuItem::with_id(id::MUTE, tr("mute", lang), true, muted, None);
 
     let vol_enabled = CheckMenuItem::with_id(
-        "vol_enabled",
+        id::VOL_ENABLED,
         tr("enabled", lang),
         true,
         cfg.volume_limit_enabled,
         None,
     );
-    let vol_25 = CheckMenuItem::with_id(
-        "vol_25",
-        "25%",
-        cfg.volume_limit_enabled,
-        cfg.volume_limit == 25 && cfg.volume_limit_enabled,
-        None,
-    );
-    let vol_50 = CheckMenuItem::with_id(
-        "vol_50",
-        "50%",
-        cfg.volume_limit_enabled,
-        cfg.volume_limit == 50 && cfg.volume_limit_enabled,
-        None,
-    );
-    let vol_75 = CheckMenuItem::with_id(
-        "vol_75",
-        "75%",
-        cfg.volume_limit_enabled,
-        cfg.volume_limit == 75 && cfg.volume_limit_enabled,
-        None,
-    );
-    let vol_sub = Submenu::with_id_and_items(
-        "volume_limit",
-        tr("volume_limit", lang),
-        true,
-        &[&vol_enabled, &PredefinedMenuItem::separator(), &vol_25, &vol_50, &vol_75],
-    )
-    .expect("volume_limit submenu");
+    let vol_items: Vec<CheckMenuItem> = VOLUME_PRESETS
+        .iter()
+        .map(|preset| {
+            CheckMenuItem::with_id(
+                id::vol_preset(*preset),
+                format!("{preset}%"),
+                cfg.volume_limit_enabled,
+                cfg.volume_limit == *preset && cfg.volume_limit_enabled,
+                None,
+            )
+        })
+        .collect();
+    let vol_sep = PredefinedMenuItem::separator();
+    let mut vol_refs: Vec<&dyn muda::IsMenuItem> = vec![&vol_enabled, &vol_sep];
+    vol_refs.extend(vol_items.iter().map(|item| item as &dyn muda::IsMenuItem));
+    let vol_sub =
+        Submenu::with_id_and_items("volume_limit", tr("volume_limit", lang), true, &vol_refs)
+            .expect("volume_limit submenu");
 
     let wheel = CheckMenuItem::with_id(
-        "wheel_accel",
+        id::WHEEL_ACCEL,
         tr("wheel_accel", lang),
         true,
         cfg.wheel_acceleration,
@@ -98,18 +126,18 @@ pub fn build_menu(
         Submenu::with_id_and_items("experimental", tr("experimental", lang), true, &[&wheel])
             .expect("experimental submenu");
 
-    let open_mixer = MenuItem::with_id("open_mixer", tr("open_mixer", lang), true, None);
-    let open_sound = MenuItem::with_id("open_sound", tr("open_sound", lang), true, None);
+    let open_mixer = MenuItem::with_id(id::OPEN_MIXER, tr("open_mixer", lang), true, None);
+    let open_sound = MenuItem::with_id(id::OPEN_SOUND, tr("open_sound", lang), true, None);
     let autostart =
-        CheckMenuItem::with_id("autostart", tr("autostart", lang), true, cfg.autostart, None);
+        CheckMenuItem::with_id(id::AUTOSTART, tr("autostart", lang), true, cfg.autostart, None);
     let lang_zh =
-        CheckMenuItem::with_id("lang_zh", tr("chinese", lang), true, cfg.lang == Lang::Zh, None);
+        CheckMenuItem::with_id(id::LANG_ZH, tr("chinese", lang), true, cfg.lang == Lang::Zh, None);
     let lang_en =
-        CheckMenuItem::with_id("lang_en", tr("english", lang), true, cfg.lang == Lang::En, None);
+        CheckMenuItem::with_id(id::LANG_EN, tr("english", lang), true, cfg.lang == Lang::En, None);
     let lang_sub = Submenu::with_id_and_items("language", "Language", true, &[&lang_zh, &lang_en])
         .expect("language submenu");
-    let about = MenuItem::with_id("about", tr("about", lang), true, None);
-    let exit = MenuItem::with_id("exit", tr("exit", lang), true, None);
+    let about = MenuItem::with_id(id::ABOUT, tr("about", lang), true, None);
+    let exit = MenuItem::with_id(id::EXIT, tr("exit", lang), true, None);
 
     let menu = Menu::new();
     for item in &device_items {

@@ -6,6 +6,8 @@ pub mod i18n;
 pub mod icon;
 /// Tray menu builder.
 pub mod menu;
+/// Shared label sanitization/truncation for menu + tooltip.
+pub(crate) mod text;
 /// Tooltip formatting.
 pub mod tooltip;
 /// Tray wrapper.

@@ -271,8 +271,20 @@ impl RealBackend {
     }
 
     #[allow(dead_code)]
-    /// 批量获取启动所需状态：设备列表 + 默认设备 + 音量 + 静音，共享同一个 enumerator/endpoint
+    /// 批量获取启动所需状态：设备列表 + 默认设备 + 音量 + 静音，共享同一个 enumerator/endpoint。
+    ///
+    /// 等价于不做限幅的 [`fetch_snapshot_clamped`](Self::fetch_snapshot_clamped)，
+    /// 保留供调试/基准对比使用。
     pub fn fetch_snapshot(&mut self) -> AudioSnapshot {
+        self.fetch_snapshot_inner(None)
+    }
+
+    /// 合并 clamp 的快照：内部一次性处理限幅，避免二次 get_volume_and_mute
+    pub fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot {
+        self.fetch_snapshot_inner(Some(cfg))
+    }
+
+    fn fetch_snapshot_inner(&mut self, cfg: Option<&AppConfig>) -> AudioSnapshot {
         let mut snap = AudioSnapshot::default();
         // 尽量用缓存的 enumerator
         let enumerator = match self.enumerator_mut() {
@@ -297,43 +309,16 @@ impl RealBackend {
                     if let Ok(m) = vol.GetMute() {
                         snap.mute = m.as_bool();
                     }
-                }
-            }
-        }
-        snap
-    }
-
-    /// 合并 clamp 的快照：内部一次性处理限幅，避免二次 get_volume_and_mute
-    pub fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot {
-        let mut snap = AudioSnapshot::default();
-        let enumerator = match self.enumerator_mut() {
-            Ok(e) => e,
-            Err(_) => return snap,
-        };
-        if let Ok(devs) = self.enumerate_devices_inner(&enumerator) {
-            snap.devices = devs;
-        }
-        unsafe {
-            if let Ok(dev) = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) {
-                if let Ok(id) = Self::device_id(&dev) {
-                    let name = Self::device_friendly_name(&dev);
-                    snap.default_device = Some(AudioDevice { id, name });
-                }
-                if let Ok(vol) = dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) {
-                    if let Ok(scalar) = vol.GetMasterVolumeLevelScalar() {
-                        snap.volume = (scalar * 100.0).round() as u32;
-                    }
-                    if let Ok(m) = vol.GetMute() {
-                        snap.mute = m.as_bool();
-                    }
                     // 一次性限幅，避免外部二次 get_volume_and_mute
-                    if cfg.volume_limit_enabled {
-                        let clamped = clamp_volume(snap.volume, cfg);
-                        if clamped != snap.volume {
-                            let _guard = SuppressGuard::new();
-                            let v = clamped.min(100) as f32 / 100.0;
-                            if vol.SetMasterVolumeLevelScalar(v, std::ptr::null()).is_ok() {
-                                snap.volume = clamped;
+                    if let Some(cfg) = cfg {
+                        if cfg.volume_limit_enabled {
+                            let clamped = clamp_volume(snap.volume, cfg);
+                            if clamped != snap.volume {
+                                let _guard = SuppressGuard::new();
+                                let v = clamped.min(100) as f32 / 100.0;
+                                if vol.SetMasterVolumeLevelScalar(v, std::ptr::null()).is_ok() {
+                                    snap.volume = clamped;
+                                }
                             }
                         }
                     }
@@ -346,8 +331,16 @@ impl RealBackend {
     /// 一次 endpoint 激活同时获取音量+静音，减少一次 CoCreateInstance+Activate
     /// 复用 cached_enumerator 而非每次新建
     pub fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
+        Self::volume_and_mute_with(&self.cached_enumerator)
+    }
+
+    /// 共享的单次 Activate 实现：trait 方法与固有方法都走这里，
+    /// 避免 `get_volume_and_mute` 的三处重复体。
+    fn volume_and_mute_with(
+        cached: &Option<windows::Win32::Media::Audio::IMMDeviceEnumerator>,
+    ) -> Result<(u32, bool), AudioError> {
         unsafe {
-            let enumerator = if let Some(e) = &self.cached_enumerator {
+            let enumerator = if let Some(e) = cached {
                 e.clone()
             } else {
                 Self::get_enumerator().map_err(AudioError::from)?
@@ -398,14 +391,19 @@ impl RealBackend {
         }
     }
 
-    #[allow(dead_code)]
     /// Polls the notification flag and clears cache if a device changed.
-    pub fn poll_device_changed(&mut self) -> bool {
+    /// Single helper shared by the inherent method and the trait impl.
+    fn take_notification(&mut self) -> bool {
         if take_device_changed() {
             self.clear_cache();
             return true;
         }
         false
+    }
+
+    /// Inherent alias kept for callers using `RealBackend` directly.
+    pub fn poll_device_changed(&mut self) -> bool {
+        self.take_notification()
     }
 
     fn get_enumerator() -> windows::core::Result<IMMDeviceEnumerator> {
@@ -466,29 +464,10 @@ impl AudioBackend for RealBackend {
         RealBackend::fetch_snapshot_clamped(self, cfg)
     }
     fn get_volume_and_mute(&self) -> Result<(u32, bool), AudioError> {
-        // optimized: single Activate, reuse cached_enumerator
-        unsafe {
-            let enumerator = if let Some(e) = &self.cached_enumerator {
-                e.clone()
-            } else {
-                Self::get_enumerator().map_err(AudioError::from)?
-            };
-            let dev = enumerator
-                .GetDefaultAudioEndpoint(eRender, eMultimedia)
-                .map_err(AudioError::from)?;
-            let vol: IAudioEndpointVolume =
-                dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
-            let scalar = vol.GetMasterVolumeLevelScalar().map_err(AudioError::from)?;
-            let m = vol.GetMute().map_err(AudioError::from)?;
-            Ok(((scalar * 100.0).round() as u32, m.as_bool()))
-        }
+        Self::volume_and_mute_with(&self.cached_enumerator)
     }
     fn poll_device_changed(&mut self) -> bool {
-        if take_device_changed() {
-            self.clear_cache();
-            return true;
-        }
-        false
+        self.take_notification()
     }
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
         let enumerator = self.enumerator_mut().map_err(AudioError::from)?;
@@ -592,8 +571,6 @@ impl AudioBackend for RealBackend {
     }
 }
 
-#[cfg(not(windows))]
-use windows::Win32::Foundation::HANDLE;
 /// Real backend stub for non-Windows (compilation only).
 #[cfg(not(windows))]
 pub struct RealBackend {
@@ -659,9 +636,4 @@ impl AudioBackend for RealBackend {
 #[cfg(not(windows))]
 pub fn take_device_changed() -> bool {
     false
-}
-/// Stub — null handle on non-Windows.
-#[cfg(not(windows))]
-pub fn device_event_handle() -> windows::Win32::Foundation::HANDLE {
-    windows::Win32::Foundation::HANDLE::default()
 }

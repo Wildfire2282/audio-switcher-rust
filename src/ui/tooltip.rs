@@ -3,6 +3,7 @@
 use crate::audio::AudioDevice;
 use crate::config::Lang;
 use crate::ui::i18n::tr;
+use crate::ui::text::{MAX_LABEL_CHARS, truncate_label};
 
 /// Build the tray tooltip text.
 ///
@@ -13,42 +14,11 @@ pub fn format_tooltip(device: Option<&AudioDevice>, volume: u32, mute: bool, lan
     if mute {
         tr("muted", lang)
     } else if let Some(d) = device {
-        let sanitized = d.name.replace(['\r', '\n', '\t'], " ");
-        let base = format!("{sanitized} - {volume}%");
-        truncate(&base)
+        // truncate_label sanitizes internally; don't pre-sanitize (avoids double allocation).
+        let base = format!("{} - {volume}%", d.name);
+        truncate_label(&base, MAX_LABEL_CHARS)
     } else {
         format!("{volume}%")
-    }
-}
-
-fn truncate(s: &str) -> String {
-    // Single-pass char counting + truncation, handles graphemes via chars (conservative).
-    let mut count = 0usize;
-    let mut end = s.len();
-    for (idx, _) in s.char_indices() {
-        if count >= 60 {
-            end = idx;
-            break;
-        }
-        count += 1;
-    }
-    if count < 60 && s.chars().count() <= 60 {
-        // Fast path already counted, but need exact check
-        if s.chars().count() <= 60 {
-            return s.to_string();
-        }
-    }
-    if s.chars().count() > 60 {
-        let t: String = s.chars().take(58).collect();
-        format!("{t}…")
-    } else {
-        // Use end computed above when possible
-        if end != s.len() {
-            let t: String = s.chars().take(58).collect();
-            format!("{t}…")
-        } else {
-            s.to_string()
-        }
     }
 }
 

@@ -28,7 +28,7 @@ unsafe extern "system" fn hook_proc(
         let info = unsafe { &*(l_param.0 as *const MSLLHOOKSTRUCT) };
         #[allow(clippy::cast_possible_wrap, clippy::cast_lossless)]
         let delta = (info.mouseData >> 16) as u16 as i16 as i32;
-        // Release ordering pairs with Acquire in consumer (take_pending/take_delta).
+        // Release ordering pairs with Acquire in consumer (take_wheel_event/peek_pending).
         WHEEL_DELTA.fetch_add(delta, Ordering::AcqRel);
         WHEEL_PENDING.store(true, Ordering::Release);
     }
@@ -122,19 +122,20 @@ impl Drop for WheelHook {
 
 // ---- stateless helpers for App ----
 
-/// Take and clear the pending flag.
-pub(crate) fn take_pending() -> bool {
-    WHEEL_PENDING.swap(false, Ordering::AcqRel)
+/// Atomically take the pending wheel event: `(had_event, accumulated_delta)`.
+///
+/// Merges the old `take_pending` + `take_delta` pair so callers cannot observe
+/// a torn state (pending cleared but delta left behind, or vice versa).
+pub(crate) fn take_wheel_event() -> (bool, i32) {
+    let delta = WHEEL_DELTA.swap(0, Ordering::AcqRel);
+    let pending = WHEEL_PENDING.swap(false, Ordering::AcqRel);
+    // A nonzero delta implies an event even if the flag raced; treat either as pending.
+    (pending || delta != 0, delta)
 }
 
 /// Peek without clearing.
 pub(crate) fn peek_pending() -> bool {
-    WHEEL_PENDING.load(Ordering::Acquire)
-}
-
-/// Take and clear accumulated delta.
-pub(crate) fn take_delta() -> i32 {
-    WHEEL_DELTA.swap(0, Ordering::AcqRel)
+    WHEEL_PENDING.load(Ordering::Acquire) || WHEEL_DELTA.load(Ordering::Acquire) != 0
 }
 
 /// Whether the cursor is over the tray icon's rect (with padding).

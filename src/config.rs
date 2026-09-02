@@ -236,76 +236,7 @@ impl AppConfig {
     #[must_use]
     pub fn load_from(path: &Path) -> Self {
         match std::fs::read(path) {
-            Ok(bytes) => match serde_json::from_slice::<Self>(&bytes) {
-                Ok(mut cfg) => {
-                    // Version migration scaffold.
-                    match cfg.version {
-                        CURRENT_VERSION => {}
-                        0 => {
-                            cfg.version = CURRENT_VERSION;
-                        }
-                        _ => {
-                            // Unknown future version — keep fields but bump version.
-                            cfg.version = CURRENT_VERSION;
-                        }
-                    }
-                    if !(1..=100).contains(&cfg.volume_limit) {
-                        cfg.volume_limit = default_volume_limit();
-                    }
-                    cfg
-                }
-                Err(e) => {
-                    // Try tolerant recovery: salvage valid fields via Value merge.
-                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                        if let serde_json::Value::Object(mut map) = val {
-                            // Ensure volume_limit is salvageable even if string-typed.
-                            if let Some(v) = map.get("volume_limit").cloned() {
-                                if let serde_json::Value::String(s) = v {
-                                    if let Ok(n) = s.trim().parse::<u32>() {
-                                        if (1..=100).contains(&n) {
-                                            map.insert(
-                                                "volume_limit".into(),
-                                                serde_json::Value::Number(n.into()),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            if let Ok(mut cfg) = serde_json::from_value::<Self>(
-                                serde_json::Value::Object(map.clone()),
-                            ) {
-                                if !(1..=100).contains(&cfg.volume_limit) {
-                                    cfg.volume_limit = default_volume_limit();
-                                }
-                                cfg.version = CURRENT_VERSION;
-                                let _ = cfg.save_to(path);
-                                return cfg;
-                            }
-                        }
-                    }
-                    // Corrupted file — back up original before overwriting.
-                    let backup = {
-                        let nanos = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_nanos())
-                            .unwrap_or(0);
-                        let pid = std::process::id();
-                        path.with_file_name(format!(
-                            "{}.bak.{}-{}",
-                            path.file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_else(|| "config.json".into()),
-                            nanos,
-                            pid
-                        ))
-                    };
-                    let _ = std::fs::write(&backup, &bytes);
-                    let _ = e;
-                    let def = Self::default();
-                    let _ = def.save_to(path);
-                    def
-                }
-            },
+            Ok(bytes) => Self::load_from_bytes(&bytes, path),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let def = Self::default();
                 let _ = def.save_to(path);
@@ -316,6 +247,78 @@ impl AppConfig {
                 Self::default()
             }
         }
+    }
+
+    /// Parse `bytes` read from `path`, migrating and validating.
+    fn load_from_bytes(bytes: &[u8], path: &Path) -> Self {
+        match serde_json::from_slice::<Self>(bytes) {
+            Ok(cfg) => Self::migrate(cfg),
+            Err(e) => {
+                // Try tolerant recovery: salvage valid fields via Value merge.
+                if let Some(cfg) = Self::recover_tolerant(bytes, path) {
+                    return cfg;
+                }
+                // Corrupted file — back up original before overwriting.
+                Self::backup_and_reset(bytes, path, e)
+            }
+        }
+    }
+
+    /// Bump unknown versions to current and clamp out-of-range limits.
+    fn migrate(mut cfg: Self) -> Self {
+        cfg.version = CURRENT_VERSION;
+        if !(1..=100).contains(&cfg.volume_limit) {
+            cfg.volume_limit = default_volume_limit();
+        }
+        cfg
+    }
+
+    /// Salvage a partially-valid JSON object (e.g. string-typed `volume_limit`).
+    /// Returns `None` when the content is not a recoverable object.
+    fn recover_tolerant(bytes: &[u8], path: &Path) -> Option<Self> {
+        let serde_json::Value::Object(mut map) =
+            serde_json::from_slice::<serde_json::Value>(bytes).ok()?
+        else {
+            return None;
+        };
+        // Ensure volume_limit is salvageable even if string-typed.
+        if let Some(serde_json::Value::String(s)) = map.get("volume_limit").cloned() {
+            if let Ok(n) = s.trim().parse::<u32>() {
+                if (1..=100).contains(&n) {
+                    map.insert("volume_limit".into(), serde_json::Value::Number(n.into()));
+                }
+            }
+        }
+        let mut cfg = serde_json::from_value::<Self>(serde_json::Value::Object(map)).ok()?;
+        if !(1..=100).contains(&cfg.volume_limit) {
+            cfg.volume_limit = default_volume_limit();
+        }
+        cfg.version = CURRENT_VERSION;
+        let _ = cfg.save_to(path);
+        Some(cfg)
+    }
+
+    /// Back up corrupted `bytes` next to `path`, overwrite with defaults, and return them.
+    fn backup_and_reset(bytes: &[u8], path: &Path, _err: serde_json::Error) -> Self {
+        let backup = {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let pid = std::process::id();
+            path.with_file_name(format!(
+                "{}.bak.{}-{}",
+                path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "config.json".into()),
+                nanos,
+                pid
+            ))
+        };
+        let _ = std::fs::write(&backup, bytes);
+        let def = Self::default();
+        let _ = def.save_to(path);
+        def
     }
 
     /// Non-blocking save; returns a handle that can be joined in tests.

@@ -11,6 +11,3 @@ pub(crate) use autostart::{is_autostart_enabled, set_autostart};
 pub use com::ComGuard;
 pub(crate) use dialog::show_autostart_error;
 pub use instance::SingleInstanceGuard;
-
-#[allow(unused_imports)]
-pub(crate) use hook::{cursor_over_tray, peek_pending, take_delta, take_pending};

@@ -76,40 +76,7 @@ impl AppBuilder {
     #[must_use]
     pub fn build(self) -> App<RealBackend> {
         let cfg = self.cfg.unwrap_or_else(AppConfig::load);
-        let mut backend = RealBackend::new();
-        let mut tray = TrayWrapper::new(&cfg, &[], None, false).unwrap_or_else(|e| {
-            eprintln!("tray build failed, retrying: {e}");
-            // Fallback: try once more; if still fails, panic with context.
-            TrayWrapper::new(&cfg, &[], None, false).expect("tray build failed twice")
-        });
-        let snap = backend.fetch_snapshot_clamped(&cfg);
-        let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
-        tray.rebuild_menu(&cfg, &snap.devices, default_id.as_deref(), snap.mute);
-        tray.update_tooltip(format_tooltip(
-            snap.default_device.as_ref(),
-            snap.volume,
-            snap.mute,
-            cfg.lang,
-        ));
-        tray.update_icon(snap.mute);
-        // Autostart side-effect only when config came from disk (not injected in tests).
-        // Reuse the canonical helper to avoid duplication with with_backend.
-        ensure_autostart(&cfg);
-        App {
-            cfg,
-            backend,
-            tray,
-            wheel: WheelState::new(),
-            is_hover: false,
-            last_hover: instant_ago(Duration::from_secs(10)),
-            last_cursor_check: instant_ago(Duration::from_secs(1)),
-            last_cursor_over: false,
-            last_devices_rebuild: instant_ago(Duration::from_secs(1)),
-            hook: None,
-            hook_install_at: Instant::now() + Duration::from_millis(180),
-            should_exit: false,
-            _com: self.com,
-        }
+        App::assemble(cfg, RealBackend::new(), self.com)
     }
 }
 impl App<RealBackend> {
@@ -126,12 +93,19 @@ impl<B: AudioBackend> App<B> {
     /// # Panics
     ///
     /// Panics if the tray icon cannot be created.
-    pub fn with_backend(com: crate::platform::ComGuard, mut backend: B) -> Self {
+    pub fn with_backend(com: crate::platform::ComGuard, backend: B) -> Self {
         let cfg = AppConfig::load();
+        Self::assemble(cfg, backend, com)
+    }
+
+    /// Single assembly path shared by [`AppBuilder::build`] and
+    /// [`with_backend`](Self::with_backend): tray, snapshot, and state init.
+    fn assemble(cfg: AppConfig, mut backend: B, com: crate::platform::ComGuard) -> Self {
         ensure_autostart(&cfg);
         let mut tray = TrayWrapper::new(&cfg, &[], None, false).unwrap_or_else(|e| {
-            eprintln!("tray build failed: {e}");
-            TrayWrapper::new(&cfg, &[], None, false).expect("tray build retry failed")
+            eprintln!("tray build failed, retrying: {e}");
+            // Fallback: try once more; if still fails, panic with context.
+            TrayWrapper::new(&cfg, &[], None, false).expect("tray build failed twice")
         });
         let snap = backend.fetch_snapshot_clamped(&cfg);
         let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
@@ -371,14 +345,13 @@ impl<B: AudioBackend> App<B> {
         }
     }
     fn poll_wheel(&mut self) {
-        if !hook::take_pending() {
+        let (pending, delta) = hook::take_wheel_event();
+        if !pending || delta == 0 {
             return;
         }
-        let delta = hook::take_delta();
         if !(self.is_hover
             || self.last_hover.elapsed() < Duration::from_millis(2500)
             || self.last_cursor_over)
-            || delta == 0
         {
             return;
         }
