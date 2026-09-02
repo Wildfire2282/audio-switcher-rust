@@ -21,9 +21,9 @@ pub(crate) fn open_file(file: &str, params: Option<&str>) -> Result<(), String> 
     }
     // SAFETY: ShellExecuteW with null-terminated PCWSTRs living through the call.
     unsafe {
-        use windows::core::PCWSTR;
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        use windows::core::PCWSTR;
         let op: Vec<u16> = "open\0".encode_utf16().collect();
         let file_w: Vec<u16> = format!("{file}\0").encode_utf16().collect();
         let params_w: Option<Vec<u16>> = params.map(|p| format!("{p}\0").encode_utf16().collect());
@@ -64,9 +64,12 @@ fn center_hwnd(hwnd: windows::Win32::Foundation::HWND) {
     // SAFETY: Win32 FFI with valid HWND.
     unsafe {
         use windows::Win32::Foundation::RECT;
-        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+        };
         use windows::Win32::UI::WindowsAndMessaging::{
-            GetSystemMetrics, GetWindowRect, SetWindowPos, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+            GetSystemMetrics, GetWindowRect, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOSIZE,
+            SWP_NOZORDER, SetWindowPos,
         };
         let mut rect = RECT::default();
         if GetWindowRect(hwnd, &mut rect).is_err() {
@@ -78,12 +81,15 @@ fn center_hwnd(hwnd: windows::Win32::Foundation::HWND) {
             return;
         }
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        let mut mi = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
+        let mut mi =
+            MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
         let (sw, sh, off_x, off_y) = if GetMonitorInfoW(monitor, &mut mi).as_bool() {
-            (mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top, mi.rcWork.left, mi.rcWork.top)
+            (
+                mi.rcWork.right - mi.rcWork.left,
+                mi.rcWork.bottom - mi.rcWork.top,
+                mi.rcWork.left,
+                mi.rcWork.top,
+            )
         } else {
             (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), 0, 0)
         };
@@ -97,7 +103,8 @@ fn center_hwnd(hwnd: windows::Win32::Foundation::HWND) {
 fn center_matching_window(keywords: &[&str]) -> bool {
     use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible, ShowWindow, SW_HIDE, SW_SHOW,
+        EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible, SW_HIDE, SW_SHOW,
+        ShowWindow,
     };
     use windows_core::BOOL;
 
@@ -127,11 +134,15 @@ fn center_matching_window(keywords: &[&str]) -> bool {
                 // If not yet visible, just move so it first appears centered.
                 let was_visible = unsafe { IsWindowVisible(hwnd).as_bool() };
                 if was_visible {
-                    unsafe { let _ = ShowWindow(hwnd, SW_HIDE); }
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    }
                 }
                 center_hwnd(hwnd);
                 if was_visible {
-                    unsafe { let _ = ShowWindow(hwnd, SW_SHOW); }
+                    unsafe {
+                        let _ = ShowWindow(hwnd, SW_SHOW);
+                    }
                 }
                 ctx.found = true;
                 break;

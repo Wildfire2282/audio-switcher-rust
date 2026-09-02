@@ -2,6 +2,6 @@
 
 /// Commonly used audio and config types.
 pub use crate::audio::{AudioBackend, AudioDevice};
-pub use crate::config::{clamp_volume, AppConfig, Lang};
+pub use crate::config::{AppConfig, Lang, clamp_volume};
 /// Platform guards for binary entry.
 pub use crate::platform::{ComGuard, SingleInstanceGuard};

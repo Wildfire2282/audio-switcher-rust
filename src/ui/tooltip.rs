@@ -79,12 +79,12 @@ mod tests {
 
     #[test]
     fn clamp_via_config() {
+        use crate::config::clamp_volume;
         let mut cfg = crate::config::AppConfig {
             volume_limit_enabled: true,
             volume_limit: 30,
             ..Default::default()
         };
-        use crate::config::clamp_volume;
         assert_eq!(clamp_volume(80, &cfg), 30);
         cfg.volume_limit_enabled = false;
         assert_eq!(clamp_volume(80, &cfg), 80);

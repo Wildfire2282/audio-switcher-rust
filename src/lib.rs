@@ -12,7 +12,7 @@
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
-
+#![allow(clippy::multiple_crate_versions)]
 pub mod app;
 pub(crate) mod audio;
 pub mod config;

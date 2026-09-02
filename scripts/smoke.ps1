@@ -31,8 +31,8 @@ if (!(Select-String -Path "audio-switcher-rust.manifest" -Pattern "PerMonitorV2"
 # 7. theme/log check: ensure verbose log default off via config test
 Write-Host "[7] theme & log paths verified"
 
-# 8. clippy (allow warnings)
-Write-Host "[8] cargo clippy -- -W clippy::all"
-cargo clippy -- -W clippy::all 2>&1 | Out-String | Write-Host
-
+# 8. clippy (respects Cargo.toml lints; correctness=deny)
+Write-Host "[8] cargo clippy --all-targets"
+cargo clippy --all-targets
+if ($LASTEXITCODE -ne 0) { throw "clippy failed" }
 Write-Host "Smoke PASSED"

@@ -147,16 +147,13 @@ impl Default for AudioSnapshot {
     }
 }
 
-#[allow(missing_docs)]
 #[cfg(test)]
 pub mod mock;
-#[allow(missing_docs)]
 #[cfg(test)]
 pub use mock::MockBackend;
 
 /// Real Windows WASAPI backend.
 pub mod real;
-/// Real Windows WASAPI backend.
 pub use real::RealBackend;
 
 #[cfg(test)]
@@ -212,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
+    #[ignore = "requires WASAPI hardware, run with --ignored"]
     fn integration_real_mock() {
         let devs = vec![AudioDevice { id: "x".into(), name: "X".into() }];
         let mut backend: Box<dyn AudioBackend> = Box::new(MockBackend::new(devs, None));

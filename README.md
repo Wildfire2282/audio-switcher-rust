@@ -28,7 +28,7 @@ cargo build --release
 | `volume_limit_enabled` | `bool` | `true` | 是否限幅 |
 | `volume_limit` | `1..=100` | `25` | 限幅阈值 |
 | `wheel_acceleration` | `bool` | `true` | 滚轮加速 |
-| `autostart` | `bool` | `true` | 开机自启（`auto-launch`，CurrentUser） |
+| `autostart` | `bool` | `true` | 开机自启（`auto-launch`，`CurrentUser`） |
 
 损坏 JSON → 回落默认值并重写；`volume_limit` 越界 → 重置 25。
 

@@ -3,7 +3,7 @@ use tray_icon::{TrayIcon, TrayIconBuilder};
 use crate::audio::AudioDevice;
 use crate::config::AppConfig;
 use crate::ui::icon::make_icon;
-use crate::ui::menu::{build_menu, MenuHandles};
+use crate::ui::menu::{MenuHandles, build_menu};
 use crate::ui::tooltip::format_tooltip;
 
 /// Wrapper around `tray-icon`'s `TrayIcon` holding the menu handles.

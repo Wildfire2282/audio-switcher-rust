@@ -15,5 +15,5 @@ pub mod wheel;
 
 /// Re-exported for `crate::app`.
 pub use tooltip::format_tooltip;
-pub use tray::{open_sound_settings, open_volume_mixer, TrayWrapper};
+pub use tray::{TrayWrapper, open_sound_settings, open_volume_mixer};
 pub use wheel::WheelState;

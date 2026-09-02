@@ -1,7 +1,7 @@
 //! COM lifecycle RAII.
 
 #[cfg(windows)]
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 /// RAII guard for COM — thread-affine (STA) and `!Send`/`!Sync`.
 ///
 /// Contains a `PhantomData<*const ()>` marker so it cannot be sent across

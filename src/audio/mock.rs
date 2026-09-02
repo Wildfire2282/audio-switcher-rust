@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::config::{clamp_volume, AppConfig};
+use crate::config::{AppConfig, clamp_volume};
 
 use super::{AudioBackend, AudioDevice, AudioError};
 
@@ -91,7 +91,7 @@ impl AudioBackend for MockBackend {
             self.clear_cache();
             Ok(())
         } else {
-            Err(AudioError::Failed(format!("not found: {}", id)))
+            Err(AudioError::Failed(format!("not found: {id}")))
         }
     }
 

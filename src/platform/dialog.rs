@@ -7,21 +7,28 @@ use windows::core::PCWSTR;
 // Centered MessageBox helper (hook-based)
 // ---------------------------------------------------------------------------
 #[cfg(windows)]
-fn show_centered_message_box_raw(text: PCWSTR, title: PCWSTR, style: windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE) {
+fn show_centered_message_box_raw(
+    text: PCWSTR,
+    title: PCWSTR,
+    style: windows::Win32::UI::WindowsAndMessaging::MESSAGEBOX_STYLE,
+) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::GetCurrentThreadId;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        HHOOK, SetWindowsHookExW, WH_CBT,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{HHOOK, SetWindowsHookExW, WH_CBT};
 
     static HOOK: AtomicUsize = AtomicUsize::new(0);
 
     unsafe extern "system" fn cbt_hook(n_code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         use std::sync::atomic::Ordering;
         use windows::Win32::Foundation::{HWND, RECT};
-        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
-        use windows::Win32::UI::WindowsAndMessaging::{CallNextHookEx, GetWindowRect, HHOOK, HCBT_ACTIVATE, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CallNextHookEx, GetWindowRect, HCBT_ACTIVATE, HHOOK, SWP_NOACTIVATE, SWP_NOSIZE,
+            SWP_NOZORDER, SetWindowPos,
+        };
 
         if n_code == HCBT_ACTIVATE as i32 {
             let hwnd = HWND(wparam.0 as *mut std::ffi::c_void);
@@ -42,19 +49,24 @@ fn show_centered_message_box_raw(text: PCWSTR, title: PCWSTR, style: windows::Wi
                         let rh = mi.rcWork.bottom - mi.rcWork.top;
                         (rw, rh, mi.rcWork.left, mi.rcWork.top)
                     } else {
-                        use windows::Win32::UI::WindowsAndMessaging::{SM_CXSCREEN, SM_CYSCREEN, GetSystemMetrics};
+                        use windows::Win32::UI::WindowsAndMessaging::{
+                            GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+                        };
                         (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), 0, 0)
                     }
                 };
                 let x = off_x + (sw - w) / 2;
                 let y = off_y + (sh - h) / 2;
                 // SAFETY: SetWindowPos with valid hwnd and SWP_NOSIZE.
-                let _ = unsafe { SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) };
+                let _ = unsafe {
+                    SetWindowPos(hwnd, None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+                };
             }
         }
         // SAFETY: CallNextHookEx with stored hook handle.
         let hook_val = HOOK.load(Ordering::SeqCst);
-        let hook_opt = if hook_val == 0 { None } else { Some(HHOOK(hook_val as *mut std::ffi::c_void)) };
+        let hook_opt =
+            if hook_val == 0 { None } else { Some(HHOOK(hook_val as *mut std::ffi::c_void)) };
         unsafe { CallNextHookEx(hook_opt, n_code, wparam, lparam) }
     }
 
@@ -74,7 +86,11 @@ fn show_centered_message_box_raw(text: PCWSTR, title: PCWSTR, style: windows::Wi
     let cur = HOOK.load(Ordering::SeqCst);
     if cur != 0 {
         // SAFETY: UnhookWindowsHookEx with valid HHOOK.
-        let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(HHOOK(cur as *mut std::ffi::c_void)) };
+        let _ = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::UnhookWindowsHookEx(HHOOK(
+                cur as *mut std::ffi::c_void,
+            ))
+        };
         HOOK.store(0, Ordering::SeqCst);
     }
     // Ensure any remaining hook is cleared.
@@ -112,4 +128,3 @@ pub(crate) fn show_msgbox(msg: &str) {
 
 #[cfg(not(windows))]
 pub(crate) fn show_msgbox(_msg: &str) {}
-

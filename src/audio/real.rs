@@ -7,28 +7,28 @@
     clippy::borrow_as_ptr
 )]
 use super::{AudioBackend, AudioDevice, AudioError, AudioSnapshot};
-use crate::config::{clamp_volume, AppConfig};
+use crate::config::{AppConfig, clamp_volume};
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-#[cfg(windows)]
-use windows::core::{Interface, GUID, HRESULT, PCWSTR};
 #[cfg(windows)]
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 #[cfg(windows)]
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 #[cfg(windows)]
 use windows::Win32::Media::Audio::{
-    eMultimedia, eRender, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
-    IMMNotificationClient, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+    DEVICE_STATE_ACTIVE, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
+    IMMNotificationClient, MMDeviceEnumerator, eMultimedia, eRender,
 };
 #[cfg(windows)]
 use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
 #[cfg(windows)]
-use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, STGM_READ};
+use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, STGM_READ};
 #[cfg(windows)]
 use windows::Win32::System::Variant::VT_LPWSTR;
+#[cfg(windows)]
+use windows::core::{GUID, HRESULT, Interface, PCWSTR};
 #[cfg(windows)]
 type SetDefaultEndpointFn =
     unsafe extern "system" fn(*mut std::ffi::c_void, PCWSTR, i32) -> HRESULT;
@@ -76,7 +76,7 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
         if !vtbl_unk.is_null() {
             let qi: QiFn = unsafe { std::mem::transmute(*vtbl_unk) };
             let mut iface: *mut std::ffi::c_void = std::ptr::null_mut();
-            let hr_qi = unsafe { qi(raw_unk, &iid as *const GUID, &mut iface) };
+            let hr_qi = unsafe { qi(raw_unk, std::ptr::from_ref(&iid), &mut iface) };
             if hr_qi.is_ok() && !iface.is_null() {
                 let vtbl_iface = unsafe { *(iface as *mut *mut *mut std::ffi::c_void) };
                 if !vtbl_iface.is_null() {
@@ -547,12 +547,12 @@ impl AudioBackend for RealBackend {
                 Err(e) => {
                     // Only retry on busy/timeout HRESULTs; invalid arg is permanent.
                     let hr = e.code().0 as u32;
-                    if hr == 0x8007001E || hr == 0x800704D4 {
-                        if vol.SetMasterVolumeLevelScalar(v, std::ptr::null()).is_ok() {
-                            return Ok(());
-                        }
+                    if (hr == 0x8007_001E || hr == 0x8007_04D4)
+                        && vol.SetMasterVolumeLevelScalar(v, std::ptr::null()).is_ok()
+                    {
+                        return Ok(());
                     }
-                    Self::show_msgbox(&format!("设置音量失败: {}", e));
+                    Self::show_msgbox(&format!("设置音量失败: {e}"));
                     Err(AudioError::Failed(e.to_string()))
                 }
             }

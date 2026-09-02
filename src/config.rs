@@ -13,11 +13,7 @@ const CURRENT_VERSION: u32 = 1;
 /// Cached config path — computed once per process.
 static CONFIG_PATH_CACHE: LazyLock<PathBuf> = LazyLock::new(|| {
     let try_dir = |p: PathBuf| {
-        if p.is_absolute() {
-            Some(p.join("AudioSwitcher").join("config.json"))
-        } else {
-            None
-        }
+        if p.is_absolute() { Some(p.join("AudioSwitcher").join("config.json")) } else { None }
     };
     if let Ok(appdata) = std::env::var("APPDATA") {
         if let Some(p) = try_dir(PathBuf::from(appdata)) {
@@ -29,12 +25,10 @@ static CONFIG_PATH_CACHE: LazyLock<PathBuf> = LazyLock::new(|| {
             return p;
         }
     }
-    // Fallback to temp_dir to avoid writing to attacker-controlled CWD (e.g. System32).
     if let Some(p) = try_dir(std::env::temp_dir()) {
         return p;
-    } else {
-        PathBuf::from("config.json")
     }
+    PathBuf::from("config.json")
 });
 
 // ---------------------------------------------------------------------------
@@ -398,11 +392,7 @@ impl AppConfig {
 /// When limiting is disabled the result is still capped to 100 to preserve invariant.
 #[must_use]
 pub fn clamp_volume(volume: u32, cfg: &AppConfig) -> u32 {
-    if cfg.volume_limit_enabled {
-        volume.min(cfg.volume_limit)
-    } else {
-        volume.min(100)
-    }
+    if cfg.volume_limit_enabled { volume.min(cfg.volume_limit) } else { volume.min(100) }
 }
 
 #[cfg(test)]

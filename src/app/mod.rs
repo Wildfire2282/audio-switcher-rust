@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::audio::{AudioBackend, RealBackend};
 use crate::config::{AppConfig, Lang};
 use crate::platform::hook;
-use crate::ui::{format_tooltip, TrayWrapper, WheelState};
+use crate::ui::{TrayWrapper, WheelState, format_tooltip};
 use handler::MenuAction;
 
 fn ensure_autostart(cfg: &AppConfig) {
@@ -112,9 +112,9 @@ impl AppBuilder {
         }
     }
 }
-
 impl App<RealBackend> {
     /// Create a new `App` with the real Windows audio backend.
+    #[must_use]
     pub fn new(com: crate::platform::ComGuard) -> Self {
         Self::with_backend(com, RealBackend::new())
     }
@@ -286,7 +286,7 @@ impl<B: AudioBackend> App<B> {
         #[cfg(windows)]
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::{
-                DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+                DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
             };
             let mut msg = MSG::default();
             // SAFETY: MSG is a plain POD out-param for PeekMessageW; &raw mut/const avoids reborrow lint
@@ -386,7 +386,7 @@ impl<B: AudioBackend> App<B> {
         let step = self.wheel.push(Instant::now(), self.cfg.wheel_acceleration, delta);
         let total = WheelState::total_step(delta, step);
         if let Ok(vol) = self.backend.get_volume() {
-            // vol is 0..=100; widen infallibly, clamp then convert — MSRV 1.75 has no cast_unsigned.
+            // vol is 0..=100; widen infallibly, clamp then convert — 1.85 has `cast_unsigned`.
             let new_vol =
                 u32::try_from((i32::try_from(vol).unwrap_or(0) + total).clamp(0, 100)).unwrap_or(0);
             let clamped = crate::config::clamp_volume(new_vol, &self.cfg);
@@ -412,7 +412,7 @@ impl<B: AudioBackend> App<B> {
         #[cfg(windows)]
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::{
-                MsgWaitForMultipleObjectsEx, MWMO_INPUTAVAILABLE, QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, QS_ALLINPUT,
             };
             let timeout = if hook::peek_pending() { 8 } else { 500 };
             // SAFETY: MsgWaitForMultipleObjectsEx with empty handle slice and QS_ALLINPUT is safe to call on UI thread
