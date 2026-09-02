@@ -171,9 +171,6 @@ pub struct AppConfig {
         alias = "VolumeLimit"
     )]
     pub volume_limit: u32,
-    /// Whether wheel acceleration (fast scroll → larger steps) is enabled.
-    #[serde(default = "default_wheel_accel")]
-    pub wheel_acceleration: bool,
     /// Whether to register for auto-launch at login.
     #[serde(default = "default_autostart")]
     pub autostart: bool,
@@ -191,9 +188,6 @@ fn default_volume_limit_enabled() -> bool {
 fn default_volume_limit() -> u32 {
     25
 }
-fn default_wheel_accel() -> bool {
-    true
-}
 fn default_autostart() -> bool {
     true
 }
@@ -205,7 +199,6 @@ impl Default for AppConfig {
             lang: default_lang(),
             volume_limit_enabled: default_volume_limit_enabled(),
             volume_limit: default_volume_limit(),
-            wheel_acceleration: default_wheel_accel(),
             autostart: default_autostart(),
         }
     }
@@ -410,7 +403,6 @@ mod tests {
         assert_eq!(c.lang.as_str(), "zh");
         assert!(c.volume_limit_enabled);
         assert_eq!(c.volume_limit, 25);
-        assert!(c.wheel_acceleration);
         assert!(c.autostart);
         assert_eq!(c.version, 1);
     }
@@ -461,7 +453,7 @@ mod tests {
     fn migration_version() {
         let dir = tempdir().unwrap();
         let path = AppConfig::config_path_for(dir.path());
-        let old = r#"{"version":0,"lang":"zh","volume_limit_enabled":true,"volume_limit":25,"wheel_acceleration":true,"autostart":true}"#;
+        let old = r#"{"version":0,"lang":"zh","volume_limit_enabled":true,"volume_limit":25,"autostart":true}"#;
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, old).unwrap();
         let loaded = AppConfig::load_from(&path);
@@ -483,11 +475,24 @@ mod tests {
     fn unknown_lang_fallback() {
         let dir = tempdir().unwrap();
         let path = AppConfig::config_path_for(dir.path());
-        let raw = r#"{"version":1,"lang":"fr","volume_limit_enabled":true,"volume_limit":25,"wheel_acceleration":true,"autostart":true}"#;
+        let raw = r#"{"version":1,"lang":"fr","volume_limit_enabled":true,"volume_limit":25,"autostart":true}"#;
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, raw).unwrap();
         let loaded = AppConfig::load_from(&path);
         // unknown lang maps to Zh via tolerant deserialize
         assert_eq!(loaded.lang, Lang::Zh);
+    }
+
+    #[test]
+    fn legacy_wheel_acceleration_field_ignored() {
+        // Configs written before wheel acceleration graduated to always-on
+        // still contain `wheel_acceleration`; unknown fields must be ignored.
+        let dir = tempdir().unwrap();
+        let path = AppConfig::config_path_for(dir.path());
+        let raw = r#"{"version":1,"lang":"zh","volume_limit_enabled":true,"volume_limit":25,"wheel_acceleration":false,"autostart":true}"#;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, raw).unwrap();
+        let loaded = AppConfig::load_from(&path);
+        assert_eq!(loaded, AppConfig::default());
     }
 }

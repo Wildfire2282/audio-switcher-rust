@@ -14,9 +14,9 @@ cargo build --release
 或直接运行 `cargo run --release`（`#![windows_subsystem = "windows"]` 无控制台）。
 
 ## 使用
-- **右键托盘**：设备列表（✓ 为当前默认）、全局静音、音量上限（启用/25%/50%/自定义）、实验性→滚轮加速、打开音量合成器/声音设置、开机自启、Language、关于、退出
+- **右键托盘**：设备列表（✓ 为当前默认）、全局静音、音量上限（启用/25%/50%/自定义）、打开音量合成器/声音设置、开机自启、Language、关于、退出
 - **中键托盘**：切换静音
-- **悬停 + 滚轮**：调音量（加速开启时快速滚动步进 5%）；离开托盘 2.5s 内仍响应
+- **悬停 + 滚轮**：调音量（快速滚动步进 5%）；离开托盘 2.5s 内仍响应
 
 ## 配置
 `%APPDATA%\AudioSwitcher\config.json`（`LazyLock` 缓存路径，原子写入 `.tmp.<nanos>-<cnt>` 后 `rename`）
@@ -27,7 +27,6 @@ cargo build --release
 | `lang` | `"zh"`\|`"en"` | `"zh"` | 强类型 `Lang` 枚举，大小写不敏感 |
 | `volume_limit_enabled` | `bool` | `true` | 是否限幅 |
 | `volume_limit` | `1..=100` | `25` | 限幅阈值 |
-| `wheel_acceleration` | `bool` | `true` | 滚轮加速 |
 | `autostart` | `bool` | `true` | 开机自启（`auto-launch`，`CurrentUser`） |
 
 损坏 JSON → 回落默认值并重写；`volume_limit` 越界 → 重置 25。

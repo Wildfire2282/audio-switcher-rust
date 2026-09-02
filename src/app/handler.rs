@@ -11,8 +11,6 @@ pub enum MenuAction {
     VolEnabled,
     /// Set limit to `u32` percent.
     VolLimit(u32),
-    /// Toggle wheel acceleration.
-    WheelAccel,
     /// Open volume mixer.
     OpenMixer,
     /// Open sound settings.
@@ -52,7 +50,6 @@ impl MenuAction {
         match id {
             menu_id::MUTE => Self::Mute,
             menu_id::VOL_ENABLED => Self::VolEnabled,
-            menu_id::WHEEL_ACCEL => Self::WheelAccel,
             menu_id::OPEN_MIXER => Self::OpenMixer,
             menu_id::OPEN_SOUND => Self::OpenSound,
             menu_id::AUTOSTART => Self::Autostart,

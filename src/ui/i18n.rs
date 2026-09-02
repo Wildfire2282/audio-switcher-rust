@@ -25,25 +25,11 @@ pub fn tr(key: &str, lang: Lang) -> String {
                 "Volume Limit".into()
             }
         }
-        "experimental" => {
-            if zh {
-                "实验性功能".into()
-            } else {
-                "Experimental".into()
-            }
-        }
         "enabled" => {
             if zh {
                 "启用".into()
             } else {
                 "Enabled".into()
-            }
-        }
-        "wheel_accel" => {
-            if zh {
-                "滚轮加速".into()
-            } else {
-                "Wheel Acceleration".into()
             }
         }
         "open_mixer" => {
@@ -111,6 +97,6 @@ mod tests {
         assert_eq!(tr("mute", Lang::Zh), "全局静音");
         assert_eq!(tr("mute", Lang::En), "Mute");
         assert_eq!(tr("volume_limit", Lang::Zh), "音量上限");
-        assert_eq!(tr("experimental", Lang::En), "Experimental");
+        assert_eq!(tr("volume_limit", Lang::En), "Volume Limit");
     }
 }

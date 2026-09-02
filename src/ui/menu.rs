@@ -18,8 +18,6 @@ pub mod id {
     pub const MUTE: &str = "mute";
     /// Toggle volume-limit enabled.
     pub const VOL_ENABLED: &str = "vol_enabled";
-    /// Toggle wheel acceleration.
-    pub const WHEEL_ACCEL: &str = "wheel_accel";
     /// Open volume mixer.
     pub const OPEN_MIXER: &str = "open_mixer";
     /// Open sound settings.
@@ -115,17 +113,6 @@ pub fn build_menu(
         Submenu::with_id_and_items("volume_limit", tr("volume_limit", lang), true, &vol_refs)
             .expect("volume_limit submenu");
 
-    let wheel = CheckMenuItem::with_id(
-        id::WHEEL_ACCEL,
-        tr("wheel_accel", lang),
-        true,
-        cfg.wheel_acceleration,
-        None,
-    );
-    let exp_sub =
-        Submenu::with_id_and_items("experimental", tr("experimental", lang), true, &[&wheel])
-            .expect("experimental submenu");
-
     let open_mixer = MenuItem::with_id(id::OPEN_MIXER, tr("open_mixer", lang), true, None);
     let open_sound = MenuItem::with_id(id::OPEN_SOUND, tr("open_sound", lang), true, None);
     let autostart =
@@ -148,7 +135,6 @@ pub fn build_menu(
     }
     let _ = menu.append(&mute);
     let _ = menu.append(&vol_sub);
-    let _ = menu.append(&exp_sub);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&open_mixer);
     let _ = menu.append(&open_sound);

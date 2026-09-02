@@ -207,14 +207,6 @@ impl<B: AudioBackend> App<B> {
                 self.cfg.volume_limit_enabled = true;
                 self.save_and_refresh(true);
             }
-            MenuAction::WheelAccel => {
-                self.cfg.wheel_acceleration = !self.cfg.wheel_acceleration;
-                if let Err(e) = self.cfg.save_to(&AppConfig::config_path()) {
-                    eprintln!("config save failed: {e}");
-                }
-                // Rebuild menu only — reuse snapshot path to keep COM calls batched.
-                self.refresh_ui();
-            }
             MenuAction::OpenMixer => crate::ui::open_volume_mixer(),
             MenuAction::OpenSound => crate::ui::open_sound_settings(),
             MenuAction::Autostart => {
@@ -356,7 +348,7 @@ impl<B: AudioBackend> App<B> {
             return;
         }
         self.last_hover = Instant::now();
-        let step = self.wheel.push(Instant::now(), self.cfg.wheel_acceleration, delta);
+        let step = self.wheel.push(Instant::now(), delta);
         let total = WheelState::total_step(delta, step);
         if let Ok(vol) = self.backend.get_volume() {
             // vol is 0..=100; widen infallibly, clamp then convert — 1.85 has `cast_unsigned`.
