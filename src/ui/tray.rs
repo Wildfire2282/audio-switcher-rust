@@ -73,16 +73,20 @@ impl TrayWrapper {
     }
 }
 
-/// Open the system volume mixer.
+/// Open the system volume mixer (centered).
 pub fn open_volume_mixer() {
     if crate::platform::shell::open_file("SndVol.exe", None).is_err() {
         crate::platform::shell::show_error("打开音量合成器失败");
+    } else {
+        crate::platform::shell::spawn_center_for_keywords(&["音量合成器", "volume mixer"]);
     }
 }
 
-/// Open the system sound settings.
+/// Open the system sound settings (centered).
 pub fn open_sound_settings() {
     if crate::platform::shell::open_file("control", Some("mmsys.cpl")).is_err() {
         crate::platform::shell::show_error("打开声音设置失败");
+    } else {
+        crate::platform::shell::spawn_center_for_keywords(&["声音", "sound"]);
     }
 }
