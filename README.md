@@ -1,65 +1,109 @@
-# 音频托盘管理工具
+# Audio Switcher · 音频托盘切换器
 
-> Audio Switcher Rust — Windows 托盘音频切换器，纯 Rust 实现，右键切换设备、中键静音、悬停滚轮调音量。单实例、PerMonitorV2 DPI、原子化配置持久化。
+> 一款 Windows 托盘小工具：右键切换播放设备，中键静音，悬停滚轮调音量。
+>
+> A tiny Windows tray tool: right-click to switch playback devices, middle-click to mute, hover + scroll to adjust volume.
 
-## 系统要求
-- Windows 10 1809+ / Windows 11
-- MSRV 1.85（`rust-version` 声明于 `Cargo.toml`，Edition 2024）
+[中文](#中文) · [English](#english)
 
-## 安装
+---
+
+## 中文
+
+### 这是什么
+
+Audio Switcher 常驻系统托盘，帮你快速在多个音频设备（音箱、耳机、显示器音频等）之间切换，并提供音量上限保护。单文件、无界面打扰，开机可自启。
+
+### 下载安装
+
+1. 前往 [Releases](https://github.com/Wildfire2282/audio-switcher-rust/releases) 下载最新版 `audio-switcher-rust.exe`。
+2. 双击运行，托盘区会出现图标。需要 Windows 10 1809 或更高版本。
+3. 如需开机自启：右键托盘图标 → 勾选「开机自启」。
+
+### 用法
+
+| 操作 | 效果 |
+|---|---|
+| 右键托盘图标 | 打开菜单：切换设备、静音、音量上限、打开系统声音面板等 |
+| 中键点击托盘图标 | 一键静音 / 取消静音 |
+| 鼠标悬停在图标上 + 滚轮 | 调节音量；快速滚动会自动加大步进 |
+
+离开托盘图标约 2.5 秒内，滚轮依然有效，不用一直把鼠标停在上面。
+
+### 菜单说明
+
+- **设备列表**：当前默认设备打 ✓，点击即切换。
+- **全局静音**：一键静音 / 恢复。
+- **音量上限**：限制最大音量，防止误触把声音开太大。有关闭、25%、50%、75% 四档。
+- **打开音量合成器 / 打开声音设置**：跳转到系统自带面板。
+- **开机自启**：登录后自动运行。
+- **Language**：中文 / English。
+- **关于 / 退出**。
+
+### 设置保存在哪里
+
+设置保存在 `%APPDATA%\AudioSwitcher\config.json`，一般不需要手动修改。删除该文件后重启，程序会自动恢复默认设置。
+
+### 常见问题
+
+- **图标不见了？** Windows 可能把托盘图标收进了溢出区域，点击托盘旁的「∧」把它拖出来即可。
+- **切设备没声音？** 部分应用需要重新选择输出设备，或在「打开声音设置」里确认默认设备。
+- **只能运行一个**：重复启动不会打开第二个窗口，程序是单实例运行的。
+
+---
+
+## English
+
+### What is it
+
+Audio Switcher lives in your system tray and lets you quickly switch between playback devices (speakers, headphones, monitor audio, …), with a volume cap to protect your ears. Single file, no nagging windows, optional auto-start.
+
+### Download & install
+
+1. Go to [Releases](https://github.com/Wildfire2282/audio-switcher-rust/releases) and download the latest `audio-switcher-rust.exe`.
+2. Double-click to run — an icon appears in the tray. Requires Windows 10 1809 or later.
+3. To run at login: right-click the tray icon → check “Auto Launch”.
+
+### Usage
+
+| Action | Effect |
+|---|---|
+| Right-click the tray icon | Open the menu: switch devices, mute, volume limit, system sound panels, … |
+| Middle-click the tray icon | Toggle mute |
+| Hover over the icon + scroll | Adjust volume; fast scrolling steps up automatically |
+
+Scrolling still works for about 2.5 s after the cursor leaves the icon, so you don’t have to keep it parked there.
+
+### Menu guide
+
+- **Device list**: the current default is checked (✓); click another to switch.
+- **Mute**: toggle global mute.
+- **Volume Limit**: caps the maximum volume so a stray scroll can’t blast your ears. Off / 25% / 50% / 75%.
+- **Open Volume Mixer / Open Sound Settings**: jump to the built-in Windows panels.
+- **Auto Launch**: start automatically at login.
+- **Language**: 中文 / English.
+- **About / Exit**.
+
+### Where are settings stored
+
+Settings live in `%APPDATA%\AudioSwitcher\config.json` — you normally never need to touch it. Delete it and restart to restore defaults.
+
+### FAQ
+
+- **Icon missing?** Windows may have tucked it into the tray overflow; click “∧” next to the tray and drag it out.
+- **No sound after switching?** Some apps need their output device re-selected, or confirm the default device via “Open Sound Settings”.
+- **Single instance**: launching it twice won’t open a second copy.
+
+---
+
+## 从源码构建 · Build from source
+
 ```sh
 cargo build --release
-# 产物：target/release/audio-switcher-rust.exe（已 strip + LTO，约 346KB）
-```
-或直接运行 `cargo run --release`（`#![windows_subsystem = "windows"]` 无控制台）。
-
-## 使用
-- **右键托盘**：设备列表（✓ 为当前默认）、全局静音、音量上限（启用/25%/50%/自定义）、打开音量合成器/声音设置、开机自启、Language、关于、退出
-- **中键托盘**：切换静音
-- **悬停 + 滚轮**：调音量（快速滚动步进 5%）；离开托盘 2.5s 内仍响应
-
-## 配置
-`%APPDATA%\AudioSwitcher\config.json`（`LazyLock` 缓存路径，原子写入 `.tmp.<nanos>-<cnt>` 后 `rename`）
-
-| 字段 | 类型 | 默认 | 说明 |
-|---|---|---|---|
-| `version` | `u32` | `1` | 迁移版本 |
-| `lang` | `"zh"`\|`"en"` | `"zh"` | 强类型 `Lang` 枚举，大小写不敏感 |
-| `volume_limit_enabled` | `bool` | `true` | 是否限幅 |
-| `volume_limit` | `1..=100` | `25` | 限幅阈值 |
-| `autostart` | `bool` | `true` | 开机自启（`auto-launch`，`CurrentUser`） |
-
-损坏 JSON → 回落默认值并重写；`volume_limit` 越界 → 重置 25。
-
-## 开发
-```sh
-cargo test            # 23 passed + 1 ignored + 3 doctests
-cargo clippy          # correctness=deny，pedantic=warn（FFI 噪声已 allow）
-cargo fmt --check
-cargo build --release
-```
-`scripts/smoke.ps1` 覆盖 build/test/manifest 检查。
-
-## 结构
-```text
-.
-├── Cargo.toml
-├── build.rs              # embed_manifest + winres app.ico
-├── audio-switcher-rust.manifest  # PerMonitorV2
-├── icons/                # app.ico/app.svg + 2×.rgba（按需加载，LazyLock 缓存）
-├── src/
-│   ├── lib.rs            # 库入口（含 prelude 重导出，crate 文档 = README）
-│   ├── main.rs           # 仅 SingleInstanceGuard + ComGuard + App::new
-│   ├── config.rs         # Lang/AppConfig/clamp_volume
-│   ├── prelude.rs        # use audio_switcher_rust::prelude::*
-│   ├── app/              # App + AppBuilder + handler::MenuAction
-│   ├── audio/            # AudioBackend trait + RealBackend/MockBackend + AudioSnapshot
-│   ├── platform/         # com/hook/shell/autostart/instance/dialog
-│   └── ui/               # tray/menu/tooltip/wheel/icon/i18n
-└── target/
 ```
 
-库/二进制分离（`proj-lib-main-split`）、`pub(crate)` 收敛内部 API、`thiserror` 统一错误、`OnceLock`/`LazyLock` 按需选择。
+产物 · Output: `target/release/audio-switcher-rust.exe`
 
-## 许可
-MIT — 见 `Cargo.toml` `license`
+## 许可 · License
+
+MIT
