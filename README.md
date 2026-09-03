@@ -28,7 +28,7 @@ Audio Switcher 常驻系统托盘，帮你快速在多个音频设备（音箱�
 | 中键点击托盘图标 | 一键静音 / 取消静音 |
 | 鼠标悬停在图标上 + 滚轮 | 调节音量；快速滚动会自动加大步进 |
 
-离开托盘图标约 2.5 秒内，滚轮依然有效，不用一直把鼠标停在上面。
+只有鼠标正停在托盘图标上时滚轮才有效，离开即失效，避免误触改音量。
 
 ### 菜单说明
 
@@ -72,7 +72,7 @@ Audio Switcher lives in your system tray and lets you quickly switch between pla
 | Middle-click the tray icon | Toggle mute |
 | Hover over the icon + scroll | Adjust volume; fast scrolling steps up automatically |
 
-Scrolling still works for about 2.5 s after the cursor leaves the icon, so you don’t have to keep it parked there.
+Scrolling only works while the cursor is over the tray icon; it stops immediately after leaving, to avoid accidental changes.
 
 ### Menu guide
 

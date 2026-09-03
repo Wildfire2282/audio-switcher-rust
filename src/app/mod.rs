@@ -29,7 +29,6 @@ pub struct App<B: AudioBackend = RealBackend> {
     tray: TrayWrapper,
     wheel: WheelState,
     is_hover: bool,
-    last_hover: Instant,
     last_cursor_check: Instant,
     last_cursor_over: bool,
     last_devices_rebuild: Instant,
@@ -123,7 +122,6 @@ impl<B: AudioBackend> App<B> {
             tray,
             wheel: WheelState::new(),
             is_hover: false,
-            last_hover: instant_ago(Duration::from_secs(10)),
             last_cursor_check: instant_ago(Duration::from_secs(1)),
             last_cursor_over: false,
             last_devices_rebuild: instant_ago(Duration::from_secs(1)),
@@ -283,7 +281,6 @@ impl<B: AudioBackend> App<B> {
                     self.refresh_ui();
                 }
                 self.is_hover = true;
-                self.last_hover = Instant::now();
                 self.wheel.clear();
             }
             tray_icon::TrayIconEvent::Enter { .. }
@@ -291,7 +288,6 @@ impl<B: AudioBackend> App<B> {
             | tray_icon::TrayIconEvent::Click { .. }
             | tray_icon::TrayIconEvent::DoubleClick { .. } => {
                 self.is_hover = true;
-                self.last_hover = Instant::now();
                 self.wheel.clear();
             }
             tray_icon::TrayIconEvent::Leave { .. } => {
@@ -304,28 +300,27 @@ impl<B: AudioBackend> App<B> {
     fn poll_cursor(&mut self) {
         #[cfg(windows)]
         {
-            let need = hook::peek_pending()
-                || self.is_hover
-                || self.last_hover.elapsed() < Duration::from_millis(2500);
+            let need = hook::peek_pending() || self.is_hover;
             if need && self.last_cursor_check.elapsed() > Duration::from_millis(80) {
                 self.last_cursor_check = Instant::now();
-                match hook::cursor_over_tray(&self.tray) {
-                    Some(over) => {
-                        self.last_cursor_over = over;
-                        if over {
-                            if !self.is_hover {
-                                self.is_hover = true;
-                                self.wheel.clear();
-                            }
-                            self.last_hover = Instant::now();
+                if let Some(over) = hook::cursor_over_tray(&self.tray) {
+                    self.last_cursor_over = over;
+                    if over {
+                        if !self.is_hover {
+                            self.is_hover = true;
+                            self.wheel.clear();
                         }
+                    } else {
+                        // Strict: clear hover immediately instead of waiting
+                        // for the tray Leave event, so a wheel tick just
+                        // after leaving cannot slip through.
+                        self.is_hover = false;
                     }
-                    None => {
-                        // Tray rect unavailable — treat as not over after grace period.
-                        if self.last_hover.elapsed() >= Duration::from_millis(2500) {
-                            self.last_cursor_over = false;
-                        }
-                    }
+                } else {
+                    // Tray rect unavailable — fail closed to avoid
+                    // accidental volume changes.
+                    self.last_cursor_over = false;
+                    self.is_hover = false;
                 }
             }
         }
@@ -341,13 +336,26 @@ impl<B: AudioBackend> App<B> {
         if !pending || delta == 0 {
             return;
         }
-        if !(self.is_hover
-            || self.last_hover.elapsed() < Duration::from_millis(2500)
-            || self.last_cursor_over)
+        #[cfg(windows)]
         {
-            return;
+            // Strict: require the cursor to actually be over the icon at
+            // event time. A fresh check here eliminates the old 2.5s grace
+            // window and the Leave-event delay that caused accidental changes.
+            if let Some(true) = hook::cursor_over_tray(&self.tray) {
+                self.is_hover = true;
+                self.last_cursor_over = true;
+            } else {
+                self.is_hover = false;
+                self.last_cursor_over = false;
+                return;
+            }
         }
-        self.last_hover = Instant::now();
+        #[cfg(not(windows))]
+        {
+            if !(self.is_hover || self.last_cursor_over) {
+                return;
+            }
+        }
         let step = self.wheel.push(Instant::now(), delta);
         let total = WheelState::total_step(delta, step);
         if let Ok(vol) = self.backend.get_volume() {
