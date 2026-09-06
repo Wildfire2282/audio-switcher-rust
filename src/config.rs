@@ -427,6 +427,9 @@ mod tests {
     fn clamp_disabled() {
         let cfg = AppConfig { volume_limit_enabled: false, ..Default::default() };
         assert_eq!(clamp_volume(80, &cfg), 80);
+        assert_eq!(clamp_volume(100, &cfg), 100);
+        // Disabled still preserves the 0..=100 invariant.
+        assert_eq!(clamp_volume(120, &cfg), 100);
     }
 
     #[test]

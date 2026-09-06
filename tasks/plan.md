@@ -12,7 +12,7 @@
   - [ ] `cargo build` 成功。
 - 不做：不碰持久化、音频后端、UI。
 
-## Task 2（待定）：`clamp_disabled` 超 100 回归锁定 — 待办
+## Task 2：`clamp_disabled` 超 100 回归锁定 — 已完成
 
 - 为已实现的 `min(volume, 100)` 关闭路径补边界测试（`120 -> 100`），纯测试增量。
 
