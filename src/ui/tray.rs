@@ -24,9 +24,11 @@ impl TrayWrapper {
         cfg: &AppConfig,
         devices: &[AudioDevice],
         default_id: Option<&str>,
+        inputs: &[AudioDevice],
+        default_input_id: Option<&str>,
         muted: bool,
     ) -> Result<Self, String> {
-        let handles = build_menu(cfg, devices, default_id, muted);
+        let handles = build_menu(cfg, devices, default_id, inputs, default_input_id, muted);
         let icon = make_icon(muted);
         let tooltip = format_tooltip(
             default_id.and_then(|id| devices.iter().find(|d| d.id == id)),
@@ -65,9 +67,11 @@ impl TrayWrapper {
         cfg: &AppConfig,
         devices: &[AudioDevice],
         default_id: Option<&str>,
+        inputs: &[AudioDevice],
+        default_input_id: Option<&str>,
         muted: bool,
     ) {
-        let new_handles = build_menu(cfg, devices, default_id, muted);
+        let new_handles = build_menu(cfg, devices, default_id, inputs, default_input_id, muted);
         self.tray.set_menu(Some(Box::new(new_handles.menu.clone())));
         self.handles = new_handles;
     }
@@ -82,10 +86,12 @@ impl TrayWrapper {
         cfg: &AppConfig,
         devices: &[AudioDevice],
         default_id: Option<&str>,
+        inputs: &[AudioDevice],
+        default_input_id: Option<&str>,
         muted: bool,
     ) {
-        if !self.handles.sync_state(cfg, devices, default_id, muted) {
-            self.rebuild_menu(cfg, devices, default_id, muted);
+        if !self.handles.sync_state(cfg, devices, default_id, inputs, default_input_id, muted) {
+            self.rebuild_menu(cfg, devices, default_id, inputs, default_input_id, muted);
         }
     }
 }

@@ -101,14 +101,22 @@ impl<B: AudioBackend> App<B> {
     /// [`with_backend`](Self::with_backend): tray, snapshot, and state init.
     fn assemble(cfg: AppConfig, mut backend: B, com: crate::platform::ComGuard) -> Self {
         ensure_autostart(&cfg);
-        let mut tray = TrayWrapper::new(&cfg, &[], None, false).unwrap_or_else(|e| {
+        let mut tray = TrayWrapper::new(&cfg, &[], None, &[], None, false).unwrap_or_else(|e| {
             eprintln!("tray build failed, retrying: {e}");
             // Fallback: try once more; if still fails, panic with context.
-            TrayWrapper::new(&cfg, &[], None, false).expect("tray build failed twice")
+            TrayWrapper::new(&cfg, &[], None, &[], None, false).expect("tray build failed twice")
         });
         let snap = backend.fetch_snapshot_clamped(&cfg);
         let default_id = snap.default_device.as_ref().map(|d| d.id.clone());
-        tray.rebuild_menu(&cfg, &snap.devices, default_id.as_deref(), snap.mute);
+        let default_input_id = snap.default_input_device.as_ref().map(|d| d.id.clone());
+        tray.rebuild_menu(
+            &cfg,
+            &snap.devices,
+            default_id.as_deref(),
+            &snap.input_devices,
+            default_input_id.as_deref(),
+            snap.mute,
+        );
         tray.update_tooltip(format_tooltip(
             snap.default_device.as_ref(),
             snap.volume,
@@ -142,8 +150,16 @@ impl<B: AudioBackend> App<B> {
         // Use batch snapshot to avoid 3 separate COM round-trips.
         let snap = self.backend.fetch_snapshot_clamped(&self.cfg);
         let def_id = snap.default_device.as_ref().map(|d| d.id.as_str());
+        let def_in_id = snap.default_input_device.as_ref().map(|d| d.id.as_str());
         // In-place menu update; rebuilds only when the device list changed.
-        self.tray.sync_menu(&self.cfg, &snap.devices, def_id, snap.mute);
+        self.tray.sync_menu(
+            &self.cfg,
+            &snap.devices,
+            def_id,
+            &snap.input_devices,
+            def_in_id,
+            snap.mute,
+        );
         self.tray.update_tooltip(format_tooltip(
             snap.default_device.as_ref(),
             snap.volume,
@@ -189,6 +205,13 @@ impl<B: AudioBackend> App<B> {
                 }
                 Err(e) => {
                     crate::platform::shell::show_error(&format!("切换设备失败: {e}"));
+                }
+            },
+            MenuAction::InputDevice(dev_id) => match self.backend.set_default_input_device(&dev_id)
+            {
+                Ok(()) => self.refresh_ui(),
+                Err(e) => {
+                    crate::platform::shell::show_error(&format!("切换输入设备失败: {e}"));
                 }
             },
             MenuAction::Mute => {

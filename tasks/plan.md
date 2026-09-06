@@ -16,6 +16,12 @@
 
 - 为已实现的 `min(volume, 100)` 关闭路径补边界测试（`120 -> 100`），纯测试增量。
 
+## 输入设备切换（新增）：输出区下方镜像输入区 — 已完成
+
+- 范围：`AudioBackend` 采集三方法、Real/Mock/桩实现、菜单输入区（禁用标题 + `input_` 选项）、`InputDevice` 分发、托盘与 App 接线、中英 i18n。
+- 验收：新增 `set_default_input_device_mock`、`parse_input_device`、`sync_state_tracks_input_devices`；`cargo test` 全量通过；`cargo build`、`cargo clippy`、`cargo fmt --check` 通过。
+- 不做：输入端音量/静音控制仍走输出默认端，不动音量上限、滚轮、通知链路。
+
 ## Task 3：滚轮 `total_step` 符号与大增量边界复核 — 已完成
 
 - 仅补单测，不改算法；如发现行为偏差另立任务。

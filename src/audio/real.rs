@@ -417,7 +417,13 @@ pub struct RealBackend {
 impl RealBackend {
     /// Create a backend and register the endpoint notification client once.
     pub fn new() -> Self {
-        let s = Self { cached: None, cache_time: None, input_cached: None, input_cache_time: None, cached_enumerator: None };
+        let s = Self {
+            cached: None,
+            cache_time: None,
+            input_cached: None,
+            input_cache_time: None,
+            cached_enumerator: None,
+        };
         // register once per process
         static REGISTERED: AtomicBool = AtomicBool::new(false);
         if !REGISTERED.swap(true, AtomicOrdering::SeqCst) {
@@ -610,11 +616,8 @@ impl RealBackend {
         flow: EDataFlow,
     ) -> Option<AudioDevice> {
         unsafe {
-            let enumerator = if let Some(e) = cached {
-                e.clone()
-            } else {
-                Self::get_enumerator().ok()?
-            };
+            let enumerator =
+                if let Some(e) = cached { e.clone() } else { Self::get_enumerator().ok()? };
             let dev = enumerator.GetDefaultAudioEndpoint(flow, eMultimedia).ok()?;
             let id = Self::device_id(&dev).ok()?;
             let name = Self::device_friendly_name(&dev);

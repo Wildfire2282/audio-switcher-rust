@@ -69,6 +69,13 @@ pub fn tr(key: &str, lang: Lang) -> String {
         }
         "chinese" => "中文".into(),
         "english" => "English".into(),
+        "input_devices" => {
+            if zh {
+                "输入设备".into()
+            } else {
+                "Input Devices".into()
+            }
+        }
         "muted" => {
             if zh {
                 "静音".into()

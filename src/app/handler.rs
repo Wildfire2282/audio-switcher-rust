@@ -5,6 +5,8 @@
 pub enum MenuAction {
     /// Switch to device `id`.
     Device(String),
+    /// Switch to input (capture) device `id`.
+    InputDevice(String),
     /// Toggle mute.
     Mute,
     /// Toggle volume-limit enabled.
@@ -37,12 +39,18 @@ impl MenuAction {
     /// through [`crate::ui::menu::id::parse_vol_preset`].
     #[must_use]
     pub fn from_id(id: &str) -> Self {
-        use crate::ui::menu::{DEVICE_PREFIX, id as menu_id};
+        use crate::ui::menu::{DEVICE_PREFIX, INPUT_PREFIX, id as menu_id};
         if let Some(dev) = id.strip_prefix(DEVICE_PREFIX) {
             if dev.is_empty() || dev.contains('\0') {
                 return Self::Unknown(id.to_string());
             }
             return Self::Device(dev.to_string());
+        }
+        if let Some(dev) = id.strip_prefix(INPUT_PREFIX) {
+            if dev.is_empty() || dev.contains('\0') {
+                return Self::Unknown(id.to_string());
+            }
+            return Self::InputDevice(dev.to_string());
         }
         if let Some(preset) = menu_id::parse_vol_preset(id) {
             return Self::VolLimit(preset);
@@ -74,6 +82,13 @@ mod tests {
         assert_eq!(MenuAction::from_id("vol_50"), MenuAction::VolLimit(50));
         assert_eq!(MenuAction::from_id("vol_75"), MenuAction::VolLimit(75));
         assert!(matches!(MenuAction::from_id("unknown"), MenuAction::Unknown(_)));
+    }
+
+    #[test]
+    fn parse_input_device() {
+        assert_eq!(MenuAction::from_id("input_m1"), MenuAction::InputDevice("m1".into()));
+        assert_eq!(MenuAction::from_id("device_abc"), MenuAction::Device("abc".into()));
+        assert!(matches!(MenuAction::from_id("input_"), MenuAction::Unknown(_)));
     }
 
     #[test]

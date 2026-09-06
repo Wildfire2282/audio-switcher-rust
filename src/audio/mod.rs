@@ -173,7 +173,14 @@ pub struct AudioSnapshot {
 
 impl Default for AudioSnapshot {
     fn default() -> Self {
-        Self { devices: Vec::new(), default_device: None, input_devices: Vec::new(), default_input_device: None, volume: 50, mute: false }
+        Self {
+            devices: Vec::new(),
+            default_device: None,
+            input_devices: Vec::new(),
+            default_input_device: None,
+            volume: 50,
+            mute: false,
+        }
     }
 }
 
@@ -233,8 +240,7 @@ mod tests {
             AudioDevice { id: "m1".into(), name: "Mic".into() },
             AudioDevice { id: "m2".into(), name: "Headset Mic".into() },
         ];
-        let mut m =
-            MockBackend::new(outs, Some("a".into())).with_inputs(ins, Some("m1".into()));
+        let mut m = MockBackend::new(outs, Some("a".into())).with_inputs(ins, Some("m1".into()));
         assert_eq!(m.get_default_input_device().map(|d| d.id), Some("m1".into()));
         m.set_default_input_device("m2").unwrap();
         assert_eq!(m.get_default_input_device().map(|d| d.id), Some("m2".into()));

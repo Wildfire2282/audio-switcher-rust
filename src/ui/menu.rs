@@ -9,6 +9,8 @@ use crate::ui::text::{MAX_LABEL_CHARS, truncate_label};
 
 /// Prefix for per-device menu item IDs; the remainder is the WASAPI endpoint ID.
 pub const DEVICE_PREFIX: &str = "device_";
+/// Prefix for per-input-device menu item IDs; the remainder is the WASAPI endpoint ID.
+pub const INPUT_PREFIX: &str = "input_";
 /// Volume-limit presets offered in the submenu (percent).
 pub const VOLUME_PRESETS: &[u32] = &[25, 50, 75];
 
@@ -62,6 +64,8 @@ pub struct MenuHandles {
     /// Per-device items keyed by sanitized device id plus the display name
     /// used at build time (rename detection).
     device_items: Vec<(String, String, CheckMenuItem)>,
+    /// Per-input-device items, same keying as [`Self::device_items`].
+    input_items: Vec<(String, String, CheckMenuItem)>,
     /// Language used for labels at build time (label change detection).
     lang: Lang,
     /// Global mute toggle.
@@ -94,6 +98,8 @@ impl MenuHandles {
         cfg: &AppConfig,
         devices: &[AudioDevice],
         default_id: Option<&str>,
+        inputs: &[AudioDevice],
+        default_input_id: Option<&str>,
         muted: bool,
     ) -> bool {
         if self.lang != cfg.lang {
@@ -102,13 +108,24 @@ impl MenuHandles {
         if self.device_items.len() != devices.len() {
             return false;
         }
+        if self.input_items.len() != inputs.len() {
+            return false;
+        }
         for (dev, (key, name, _)) in devices.iter().zip(&self.device_items) {
+            if Self::sanitize_id(&dev.id) != *key || dev.name != *name {
+                return false;
+            }
+        }
+        for (dev, (key, name, _)) in inputs.iter().zip(&self.input_items) {
             if Self::sanitize_id(&dev.id) != *key || dev.name != *name {
                 return false;
             }
         }
         for (dev, (_, _, item)) in devices.iter().zip(&self.device_items) {
             item.set_checked(default_id == Some(dev.id.as_str()));
+        }
+        for (dev, (_, _, item)) in inputs.iter().zip(&self.input_items) {
+            item.set_checked(default_input_id == Some(dev.id.as_str()));
         }
         self.mute.set_checked(muted);
         self.vol_enabled.set_checked(cfg.volume_limit_enabled);
@@ -131,6 +148,8 @@ pub fn build_menu(
     cfg: &AppConfig,
     devices: &[AudioDevice],
     default_id: Option<&str>,
+    inputs: &[AudioDevice],
+    default_input_id: Option<&str>,
     muted: bool,
 ) -> MenuHandles {
     let lang = cfg.lang;
@@ -150,6 +169,23 @@ pub fn build_menu(
         .collect();
 
     let mute = CheckMenuItem::with_id(id::MUTE, tr("mute", lang), true, muted, None);
+
+    let input_items: Vec<CheckMenuItem> = inputs
+        .iter()
+        .map(|dev| {
+            let checked = default_input_id == Some(dev.id.as_str());
+            CheckMenuItem::with_id(
+                format!("{INPUT_PREFIX}{}", MenuHandles::sanitize_id(&dev.id)),
+                truncate_label(&dev.name, MAX_LABEL_CHARS),
+                true,
+                checked,
+                None,
+            )
+        })
+        .collect();
+    // Disabled section header; id avoids the `input_` prefix so the handler
+    // never parses it as a device action even if it were clickable.
+    let input_header = MenuItem::with_id("inputs_header", tr("input_devices", lang), false, None);
 
     let vol_enabled = CheckMenuItem::with_id(
         id::VOL_ENABLED,
@@ -197,6 +233,13 @@ pub fn build_menu(
     if !device_items.is_empty() {
         let _ = menu.append(&PredefinedMenuItem::separator());
     }
+    if !input_items.is_empty() {
+        let _ = menu.append(&input_header);
+        for item in &input_items {
+            let _ = menu.append(item);
+        }
+        let _ = menu.append(&PredefinedMenuItem::separator());
+    }
     let _ = menu.append(&mute);
     let _ = menu.append(&vol_sub);
     let _ = menu.append(&PredefinedMenuItem::separator());
@@ -214,6 +257,11 @@ pub fn build_menu(
         device_items: devices
             .iter()
             .zip(device_items)
+            .map(|(dev, item)| (MenuHandles::sanitize_id(&dev.id), dev.name.clone(), item))
+            .collect(),
+        input_items: inputs
+            .iter()
+            .zip(input_items)
             .map(|(dev, item)| (MenuHandles::sanitize_id(&dev.id), dev.name.clone(), item))
             .collect(),
         lang,
@@ -241,26 +289,43 @@ mod tests {
     fn sync_state_updates_checks_in_place() {
         let cfg = AppConfig::default();
         let devices = test_devices();
-        let mut handles = build_menu(&cfg, &devices, Some("a"), false);
-        assert!(handles.sync_state(&cfg, &devices, Some("b"), true));
+        let mut handles = build_menu(&cfg, &devices, Some("a"), &[], None, false);
+        assert!(handles.sync_state(&cfg, &devices, Some("b"), &[], None, true));
     }
 
     #[test]
     fn sync_state_rebuilds_on_rename_reorder_and_lang() {
         let cfg = AppConfig::default();
         let devices = test_devices();
-        let mut handles = build_menu(&cfg, &devices, Some("a"), false);
+        let mut handles = build_menu(&cfg, &devices, Some("a"), &[], None, false);
         // Rename requires rebuild — labels are baked at build time.
         let mut renamed = devices.clone();
         renamed[0].name = "Renamed".into();
-        assert!(!handles.sync_state(&cfg, &renamed, Some("a"), false));
+        assert!(!handles.sync_state(&cfg, &renamed, Some("a"), &[], None, false));
         // Reorder requires rebuild.
         let mut reordered = devices.clone();
         reordered.reverse();
-        assert!(!handles.sync_state(&cfg, &reordered, Some("a"), false));
+        assert!(!handles.sync_state(&cfg, &reordered, Some("a"), &[], None, false));
         // Language change requires rebuild — all labels change.
         let mut lang_cfg = cfg.clone();
         lang_cfg.lang = if cfg.lang == Lang::Zh { Lang::En } else { Lang::Zh };
-        assert!(!handles.sync_state(&lang_cfg, &devices, Some("a"), false));
+        assert!(!handles.sync_state(&lang_cfg, &devices, Some("a"), &[], None, false));
+    }
+
+    #[test]
+    fn sync_state_tracks_input_devices() {
+        let cfg = AppConfig::default();
+        let devices = test_devices();
+        let inputs = vec![
+            AudioDevice { id: "m1".into(), name: "Mic".into() },
+            AudioDevice { id: "m2".into(), name: "Headset Mic".into() },
+        ];
+        let mut handles = build_menu(&cfg, &devices, Some("a"), &inputs, Some("m1"), false);
+        // Default switch applies in place.
+        assert!(handles.sync_state(&cfg, &devices, Some("a"), &inputs, Some("m2"), false));
+        // Input added requires rebuild.
+        let mut grown = inputs.clone();
+        grown.push(AudioDevice { id: "m3".into(), name: "Cam Mic".into() });
+        assert!(!handles.sync_state(&cfg, &devices, Some("a"), &grown, Some("m2"), false));
     }
 }
