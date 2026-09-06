@@ -138,4 +138,17 @@ mod tests {
         // 480 = 4 ticks, effective_count = 1 + 3 =4 -> step 2
         assert_eq!(s, 2);
     }
+
+    #[test]
+    fn total_step_sign_and_scaling() {
+        // Single tick keeps sign with per-tick step.
+        assert_eq!(WheelState::total_step(120, 1), 1);
+        assert_eq!(WheelState::total_step(-120, 1), -1);
+        // Sub-tick delta still yields one signed step.
+        assert_eq!(WheelState::total_step(60, 2), 2);
+        assert_eq!(WheelState::total_step(-60, 2), -2);
+        // Multi-tick scales linearly with sign.
+        assert_eq!(WheelState::total_step(240, 2), 4);
+        assert_eq!(WheelState::total_step(-240, 5), -10);
+    }
 }
