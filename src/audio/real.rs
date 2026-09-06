@@ -8,6 +8,7 @@
 )]
 use super::{AudioBackend, AudioDevice, AudioError, AudioSnapshot};
 use crate::config::{AppConfig, clamp_volume};
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]
@@ -126,28 +127,187 @@ unsafe fn set_default_endpoint_raw(device_id: &str, role: i32) -> windows::core:
 #[cfg(windows)]
 static DEVICE_CHANGED: AtomicBool = AtomicBool::new(false);
 
+/// Window (ms) during which notifications after a self-initiated change are
+/// treated as echoes of that change. Endpoint notifications typically arrive
+/// within tens of milliseconds; 200ms covers the tail while minimizing the
+/// window in which a genuine external change could be coalesced away.
 #[cfg(windows)]
-static SUPPRESS_NOTIFY: AtomicBool = AtomicBool::new(false);
+const SUPPRESS_WINDOW_MS: u64 = 200;
+
 #[cfg(windows)]
-struct SuppressGuard;
+static SUPPRESS_UNTIL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Monotonic milliseconds since boot. Uses `GetTickCount64`, which is
+/// unaffected by wall-clock adjustments (NTP, manual changes) — a wall
+/// clock could otherwise stretch or collapse the suppression window.
 #[cfg(windows)]
-impl SuppressGuard {
-    fn new() -> Self {
-        SUPPRESS_NOTIFY.store(true, AtomicOrdering::Release);
-        Self
-    }
+fn now_ms() -> u64 {
+    // SAFETY: `GetTickCount64` takes no arguments and has no failure modes.
+    unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
 }
+
+/// Suppress self-initiated audio-change notifications for `ms` milliseconds.
+///
+/// Endpoint-volume/property notifications are delivered asynchronously via
+/// the audio service, so they arrive *after* the setter call returns — an
+/// RAII guard scoped to the call is not enough. A short window after each
+/// self-initiated change is used instead; external changes inside the
+/// window are rare and self-correct on the next external change.
 #[cfg(windows)]
-impl Drop for SuppressGuard {
-    fn drop(&mut self) {
-        SUPPRESS_NOTIFY.store(false, AtomicOrdering::Release);
-    }
+fn suppress_self_changes_for(ms: u64) {
+    SUPPRESS_UNTIL_MS.store(now_ms().saturating_add(ms), AtomicOrdering::Release);
+}
+
+/// Whether self-initiated changes are currently being suppressed.
+#[cfg(windows)]
+fn suppress_notify() -> bool {
+    now_ms() < SUPPRESS_UNTIL_MS.load(AtomicOrdering::Acquire)
 }
 
 /// Returns and clears the device-change flag set by `IMMNotificationClient`.
 #[cfg(windows)]
 pub fn take_device_changed() -> bool {
     DEVICE_CHANGED.swap(false, AtomicOrdering::AcqRel)
+}
+
+/// Set when the endpoint volume/mute changed externally (media keys, other
+/// apps, system mixer). Self-initiated changes are suppressed via
+/// [`suppress_self_changes_for`].
+#[cfg(windows)]
+static VOLUME_CHANGED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+/// Returns and clears the external volume-change flag.
+pub fn take_volume_changed() -> bool {
+    VOLUME_CHANGED.swap(false, AtomicOrdering::AcqRel)
+}
+
+/// Notified by the audio engine whenever the endpoint volume or mute state
+/// changes (`IAudioEndpointVolumeCallback`). Only touches atomics so it is
+/// safe to invoke from any COM thread.
+#[cfg(windows)]
+#[windows_core::implement(windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolumeCallback)]
+struct VolumeNotifier;
+
+#[cfg(windows)]
+impl windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolumeCallback_Impl
+    for VolumeNotifier_Impl
+{
+    fn OnNotify(
+        &self,
+        _pnotify: *mut windows::Win32::Media::Audio::AUDIO_VOLUME_NOTIFICATION_DATA,
+    ) -> windows::core::Result<()> {
+        if suppress_notify() {
+            return Ok(());
+        }
+        VOLUME_CHANGED.store(true, AtomicOrdering::Release);
+        Ok(())
+    }
+}
+
+/// `VolumeNotifier` only touches atomics, so it may be invoked from any
+/// thread. The handle is owned by the MTA worker for process lifetime.
+#[cfg(windows)]
+struct VolumeCallbackHolder(
+    #[allow(dead_code)] windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolumeCallback,
+);
+#[cfg(windows)]
+// SAFETY: see struct doc.
+unsafe impl Send for VolumeCallbackHolder {}
+#[cfg(windows)]
+// SAFETY: see struct doc.
+unsafe impl Sync for VolumeCallbackHolder {}
+#[cfg(windows)]
+static VOLUME_CALLBACK: std::sync::OnceLock<VolumeCallbackHolder> = std::sync::OnceLock::new();
+/// Endpoint id whose volume interface currently has the callback registered.
+/// `None` means (re-)registration is pending. Informational (tests/diag);
+/// the worker keeps its own live-instance state.
+#[cfg(windows)]
+static VOLUME_NOTIFY_ID: Mutex<Option<String>> = Mutex::new(None);
+/// Set by `OnDefaultDeviceChanged` — the worker drops its live endpoint
+/// instance (killing the registration bound to it) and re-registers on the
+/// new default endpoint.
+#[cfg(windows)]
+static VOLUME_REREGISTER: AtomicBool = AtomicBool::new(false);
+
+/// Spawn the process-lifetime MTA worker that owns the volume-callback
+/// registration.
+///
+/// Two Win32 constraints shape this design (both verified empirically):
+///
+/// 1. Callback delivery is bound to the owning `IAudioEndpointVolume`
+///    instance's lifetime: once the activated endpoint-volume interface is
+///    released, its registration dies silently. The worker therefore keeps
+///    the interface alive in `current` for as long as the registration
+///    should stand.
+/// 2. The engine invokes callbacks from its own threads; registering on a
+///    dedicated multithreaded-apartment thread lets those calls land
+///    directly without cross-apartment marshaling, and the callback body
+///    only touches atomics so any delivery thread is safe.
+///
+/// On default-device change (signaled via [`VOLUME_REREGISTER`]) the worker
+/// releases the old instance and registers on the new default endpoint.
+#[cfg(windows)]
+fn spawn_volume_notify_worker() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("volume-notify".into()).spawn(|| {
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        // SAFETY: CoInitializeEx MTA on a dedicated worker thread; the
+        // thread lives for the process lifetime, so CoUninitialize is never
+        // needed.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        // Live registration: keeping the endpoint-volume interface alive is
+        // what keeps the callback registration alive.
+        let mut current: Option<(String, IAudioEndpointVolume)> = None;
+        loop {
+            std::thread::sleep(Duration::from_millis(1000));
+            // Already registered and no re-register requested → nothing to do.
+            // When `current` is `None` the `||` short-circuits, preserving a
+            // pending re-register flag for the iteration that succeeds.
+            let needs_register =
+                current.is_none() || VOLUME_REREGISTER.swap(false, AtomicOrdering::AcqRel);
+            if !needs_register {
+                continue;
+            }
+            // Drop the old instance — its registration dies with it.
+            current = None;
+            *VOLUME_NOTIFY_ID.lock() = None;
+            // SAFETY: standard WASAPI calls on an initialized MTA thread.
+            unsafe {
+                let Ok(enumerator) = CoCreateInstance::<_, IMMDeviceEnumerator>(
+                    &MMDeviceEnumerator,
+                    None,
+                    CLSCTX_ALL,
+                ) else {
+                    continue;
+                };
+                let Ok(dev) = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) else {
+                    continue;
+                };
+                let Ok(id) = RealBackend::device_id(&dev) else { continue };
+                let Ok(vol) = dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) else {
+                    continue;
+                };
+                let callback = if let Some(holder) = VOLUME_CALLBACK.get() {
+                    holder.0.clone()
+                } else {
+                    let cb: windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolumeCallback =
+                        VolumeNotifier.into();
+                    let _ = VOLUME_CALLBACK.set(VolumeCallbackHolder(cb.clone()));
+                    cb
+                };
+                if vol.RegisterControlChangeNotify(&callback).is_ok() {
+                    current = Some((id.clone(), vol));
+                    *VOLUME_NOTIFY_ID.lock() = Some(id);
+                }
+            }
+        }
+    });
 }
 
 #[windows_core::implement(windows::Win32::Media::Audio::IMMNotificationClient)]
@@ -177,15 +337,28 @@ impl windows::Win32::Media::Audio::IMMNotificationClient_Impl for Notifier_Impl 
         _role: windows::Win32::Media::Audio::ERole,
         _device_id: &PCWSTR,
     ) -> windows::core::Result<()> {
+        // Signal the MTA worker to drop its (dying device's) registration
+        // and re-register on the new default endpoint. Never block the COM
+        // callback thread: the id is informational only, so a contended
+        // lock is simply skipped — the worker clears/sets it itself.
+        VOLUME_REREGISTER.store(true, AtomicOrdering::Release);
+        if let Some(mut id) = VOLUME_NOTIFY_ID.try_lock() {
+            *id = None;
+        }
         DEVICE_CHANGED.store(true, AtomicOrdering::Release);
         Ok(())
     }
     fn OnPropertyValueChanged(
         &self,
         _device_id: &PCWSTR,
-        _key: &windows::Win32::Foundation::PROPERTYKEY,
+        key: &windows::Win32::Foundation::PROPERTYKEY,
     ) -> windows::core::Result<()> {
-        if SUPPRESS_NOTIFY.load(AtomicOrdering::Acquire) {
+        // Only a display-name change affects the UI; any other property
+        // (icon, form factor, …) must not trigger a menu rebuild.
+        if key != &PKEY_Device_FriendlyName {
+            return Ok(());
+        }
+        if suppress_notify() {
             return Ok(());
         }
         DEVICE_CHANGED.store(true, AtomicOrdering::Release);
@@ -247,6 +420,7 @@ impl RealBackend {
         static REGISTERED: AtomicBool = AtomicBool::new(false);
         if !REGISTERED.swap(true, AtomicOrdering::SeqCst) {
             register_notification_client();
+            spawn_volume_notify_worker();
         }
         s
     }
@@ -314,7 +488,7 @@ impl RealBackend {
                         if cfg.volume_limit_enabled {
                             let clamped = clamp_volume(snap.volume, cfg);
                             if clamped != snap.volume {
-                                let _guard = SuppressGuard::new();
+                                suppress_self_changes_for(SUPPRESS_WINDOW_MS);
                                 let v = clamped.min(100) as f32 / 100.0;
                                 if vol.SetMasterVolumeLevelScalar(v, std::ptr::null()).is_ok() {
                                     snap.volume = clamped;
@@ -469,6 +643,9 @@ impl AudioBackend for RealBackend {
     fn poll_device_changed(&mut self) -> bool {
         self.take_notification()
     }
+    fn take_volume_changed(&mut self) -> bool {
+        take_volume_changed()
+    }
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
         let enumerator = self.enumerator_mut().map_err(AudioError::from)?;
         self.enumerate_devices_inner(&enumerator)
@@ -521,6 +698,9 @@ impl AudioBackend for RealBackend {
                 .map_err(AudioError::from)?;
             let vol: IAudioEndpointVolume =
                 dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
+            // Self-initiated change: suppress the asynchronously delivered
+            // notification of our own write.
+            suppress_self_changes_for(SUPPRESS_WINDOW_MS);
             match vol.SetMasterVolumeLevelScalar(v, std::ptr::null()) {
                 Ok(()) => Ok(()),
                 Err(e) => {
@@ -550,6 +730,8 @@ impl AudioBackend for RealBackend {
                 .map_err(AudioError::from)?;
             let vol: IAudioEndpointVolume =
                 dev.Activate(CLSCTX_ALL, None).map_err(AudioError::from)?;
+            // Self-initiated change: suppress our own notification.
+            suppress_self_changes_for(SUPPRESS_WINDOW_MS);
             vol.SetMute(mute, std::ptr::null()).map_err(|e| {
                 Self::show_msgbox("切换静音失败");
                 AudioError::Failed(e.to_string())
@@ -564,7 +746,7 @@ impl AudioBackend for RealBackend {
         let (vol, _) = self.get_volume_and_mute()?;
         let clamped = clamp_volume(vol, cfg);
         if clamped != vol {
-            let _guard = SuppressGuard::new();
+            suppress_self_changes_for(SUPPRESS_WINDOW_MS);
             return self.set_volume(clamped);
         }
         Ok(())
@@ -636,4 +818,76 @@ impl AudioBackend for RealBackend {
 #[cfg(not(windows))]
 pub fn take_device_changed() -> bool {
     false
+}
+
+#[cfg(all(test, windows))]
+mod volume_notify_tests {
+    use super::*;
+
+    /// End-to-end check for the external volume-change notification: an
+    /// independent COM thread changes the master volume (simulating another
+    /// app / media keys); the registered `IAudioEndpointVolumeCallback` must
+    /// raise the flag consumed by [`take_volume_changed`].
+    ///
+    /// Volume is restored afterwards.
+    #[test]
+    #[ignore = "requires WASAPI hardware, run with --ignored"]
+    fn integration_external_volume_change_notifies() {
+        use std::time::Duration;
+        let _com = crate::platform::ComGuard::init().expect("COM init");
+        let mut backend = RealBackend::new();
+        // The MTA worker registers the callback within ~1s; wait for it.
+        let mut registered = false;
+        for _ in 0..40 {
+            if VOLUME_NOTIFY_ID.lock().is_some() {
+                registered = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(registered, "MTA worker did not register the volume callback");
+        let (vol0, _) = backend.get_volume_and_mute().expect("volume read");
+        let new_vol = if vol0 >= 50 { vol0 - 10 } else { vol0 + 10 };
+
+        let set_ext = |vol: u32| {
+            std::thread::spawn(move || {
+                let _com = crate::platform::ComGuard::init();
+                // SAFETY: standard WASAPI calls on an initialized COM thread.
+                unsafe {
+                    let enumerator: IMMDeviceEnumerator =
+                        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).unwrap();
+                    let dev = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia).unwrap();
+                    let vol_iface: IAudioEndpointVolume = dev.Activate(CLSCTX_ALL, None).unwrap();
+                    vol_iface
+                        .SetMasterVolumeLevelScalar(vol as f32 / 100.0, std::ptr::null())
+                        .unwrap();
+                }
+            })
+            .join()
+            .unwrap();
+        };
+
+        set_ext(new_vol);
+        let (vol_now, _) = backend.get_volume_and_mute().expect("post-change read");
+        assert_eq!(vol_now, new_vol, "external volume change did not apply");
+        // The engine invokes MTA callbacks on its own threads — poll for the
+        // flag without a message pump.
+        let mut fired = false;
+        for _ in 0..40 {
+            if take_volume_changed() {
+                fired = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Restore via the backend (suppressed — must not re-raise the flag).
+        // Self-notifications arrive asynchronously, so wait past the
+        // suppression window and assert none arrived.
+        backend.set_volume(vol0).expect("restore volume");
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!take_volume_changed(), "suppressed self-change raised the flag");
+        }
+        assert!(fired, "external volume change did not raise the notify flag");
+    }
 }

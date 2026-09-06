@@ -142,7 +142,8 @@ impl<B: AudioBackend> App<B> {
         // Use batch snapshot to avoid 3 separate COM round-trips.
         let snap = self.backend.fetch_snapshot_clamped(&self.cfg);
         let def_id = snap.default_device.as_ref().map(|d| d.id.as_str());
-        self.tray.rebuild_menu(&self.cfg, &snap.devices, def_id, snap.mute);
+        // In-place menu update; rebuilds only when the device list changed.
+        self.tray.sync_menu(&self.cfg, &snap.devices, def_id, snap.mute);
         self.tray.update_tooltip(format_tooltip(
             snap.default_device.as_ref(),
             snap.volume,
@@ -379,6 +380,13 @@ impl<B: AudioBackend> App<B> {
         let _ = self.backend.clamp_volume_if_needed(&self.cfg);
         self.refresh_ui();
     }
+    /// External volume/mute change (media keys, other apps) — refresh tooltip
+    /// and icon without touching the menu.
+    fn poll_volume_state(&mut self) {
+        if self.backend.take_volume_changed() {
+            self.update_tooltip_and_icon();
+        }
+    }
     // `wait` has no self data; make it an associated function (fixes clippy::unused_self)
     /// Wait for input with adaptive timeout based on wheel pending state.
     fn wait() {
@@ -412,6 +420,7 @@ impl<B: AudioBackend> App<B> {
             }
             self.poll_wheel();
             self.poll_devices();
+            self.poll_volume_state();
             Self::wait();
         }
     }

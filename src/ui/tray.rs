@@ -71,6 +71,23 @@ impl TrayWrapper {
         self.tray.set_menu(Some(Box::new(new_handles.menu.clone())));
         self.handles = new_handles;
     }
+
+    /// Update the context menu from current state.
+    ///
+    /// Applies checks/enabled states in place when the device list is
+    /// unchanged; falls back to a full rebuild only when devices were
+    /// added/removed/reordered.
+    pub fn sync_menu(
+        &mut self,
+        cfg: &AppConfig,
+        devices: &[AudioDevice],
+        default_id: Option<&str>,
+        muted: bool,
+    ) {
+        if !self.handles.sync_state(cfg, devices, default_id, muted) {
+            self.rebuild_menu(cfg, devices, default_id, muted);
+        }
+    }
 }
 
 /// Open the system volume mixer (centered).

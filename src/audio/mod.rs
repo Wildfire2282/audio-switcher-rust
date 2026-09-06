@@ -116,6 +116,13 @@ pub trait AudioBackend {
         false
     }
 
+    /// Take and clear the "external volume/mute changed" flag (keyboard media
+    /// keys, other apps, system mixer). Drives a tooltip/icon refresh without
+    /// polling. Default `false` for mocks.
+    fn take_volume_changed(&mut self) -> bool {
+        false
+    }
+
     /// Fetch a clamped snapshot in one round-trip; default builds from the
     /// methods above.
     fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot {
