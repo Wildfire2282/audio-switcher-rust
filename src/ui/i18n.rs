@@ -76,6 +76,13 @@ pub fn tr(key: &str, lang: Lang) -> String {
                 "Input Devices".into()
             }
         }
+        "output_devices" => {
+            if zh {
+                "输出设备".into()
+            } else {
+                "Output Devices".into()
+            }
+        }
         "muted" => {
             if zh {
                 "静音".into()
@@ -105,5 +112,9 @@ mod tests {
         assert_eq!(tr("mute", Lang::En), "Mute");
         assert_eq!(tr("volume_limit", Lang::Zh), "音量上限");
         assert_eq!(tr("volume_limit", Lang::En), "Volume Limit");
+        assert_eq!(tr("output_devices", Lang::Zh), "输出设备");
+        assert_eq!(tr("output_devices", Lang::En), "Output Devices");
+        assert_eq!(tr("input_devices", Lang::Zh), "输入设备");
+        assert_eq!(tr("input_devices", Lang::En), "Input Devices");
     }
 }

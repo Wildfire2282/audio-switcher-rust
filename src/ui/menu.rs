@@ -190,8 +190,10 @@ pub fn build_menu(
     let mute = CheckMenuItem::with_id(id::MUTE, tr("mute", lang), true, muted, None);
 
     let input_items = check_entries(inputs, INPUT_PREFIX, default_input_id);
-    // Disabled section header; id avoids the `input_` prefix so the handler
-    // never parses it as a device action even if it were clickable.
+    // Disabled section headers; ids avoid the device prefixes so the handler
+    // never parses them as device actions even if they were clickable.
+    let output_header =
+        MenuItem::with_id("outputs_header", tr("output_devices", lang), false, None);
     let input_header = MenuItem::with_id("inputs_header", tr("input_devices", lang), false, None);
 
     let vol_enabled = CheckMenuItem::with_id(
@@ -234,10 +236,11 @@ pub fn build_menu(
     let exit = MenuItem::with_id(id::EXIT, tr("exit", lang), true, None);
 
     let menu = Menu::new();
-    for (_, _, item) in &device_items {
-        let _ = menu.append(item);
-    }
     if !device_items.is_empty() {
+        let _ = menu.append(&output_header);
+        for (_, _, item) in &device_items {
+            let _ = menu.append(item);
+        }
         let _ = menu.append(&PredefinedMenuItem::separator());
     }
     if !input_items.is_empty() {
