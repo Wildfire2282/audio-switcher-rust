@@ -385,10 +385,11 @@ impl AppConfig {
 }
 
 /// Clamp `volume` according to `cfg`.
-/// When limiting is disabled the result is still capped to 100 to preserve invariant.
+/// Output is always capped to 100 to preserve invariant,
+/// even if `volume_limit` is out of range via direct construction.
 #[must_use]
 pub fn clamp_volume(volume: u32, cfg: &AppConfig) -> u32 {
-    if cfg.volume_limit_enabled { volume.min(cfg.volume_limit) } else { volume.min(100) }
+    if cfg.volume_limit_enabled { volume.min(cfg.volume_limit.min(100)) } else { volume.min(100) }
 }
 
 #[cfg(test)]
@@ -425,6 +426,14 @@ mod tests {
     #[test]
     fn clamp_disabled() {
         let cfg = AppConfig { volume_limit_enabled: false, ..Default::default() };
+        assert_eq!(clamp_volume(80, &cfg), 80);
+    }
+
+    #[test]
+    fn clamp_enabled_out_of_range_limit_still_caps_at_100() {
+        // Defensive: direct struct construction can bypass migrate() clamping.
+        let cfg = AppConfig { volume_limit_enabled: true, volume_limit: 200, ..Default::default() };
+        assert_eq!(clamp_volume(150, &cfg), 100);
         assert_eq!(clamp_volume(80, &cfg), 80);
     }
 

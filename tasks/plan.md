@@ -2,7 +2,7 @@
 
 > 来源：SPEC.md。每次仅做一个任务，做完即停。
 
-## Task 1（本次）：`clamp_volume` 全路径 100 上限 — 进行中
+## Task 1（本次）：`clamp_volume` 全路径 100 上限 — 已完成
 
 - 范围：仅 `src/config.rs` 内 `clamp_volume` 与对应单测。
 - 验收：
