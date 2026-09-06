@@ -19,8 +19,8 @@ use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 #[cfg(windows)]
 use windows::Win32::Media::Audio::{
-    DEVICE_STATE_ACTIVE, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
-    IMMNotificationClient, MMDeviceEnumerator, eMultimedia, eRender,
+    DEVICE_STATE_ACTIVE, EDataFlow, IMMDevice, IMMDeviceCollection, IMMDeviceEnumerator,
+    IMMNotificationClient, MMDeviceEnumerator, eCapture, eMultimedia, eRender,
 };
 #[cfg(windows)]
 use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
@@ -407,6 +407,8 @@ fn register_notification_client() {
 pub struct RealBackend {
     cached: Option<Vec<AudioDevice>>,
     cache_time: Option<Instant>,
+    input_cached: Option<Vec<AudioDevice>>,
+    input_cache_time: Option<Instant>,
     // 复用 enumerator / endpoint 避免重复 CoCreateInstance (启动阶段批量查询)
     cached_enumerator: Option<windows::Win32::Media::Audio::IMMDeviceEnumerator>,
 }
@@ -415,7 +417,7 @@ pub struct RealBackend {
 impl RealBackend {
     /// Create a backend and register the endpoint notification client once.
     pub fn new() -> Self {
-        let s = Self { cached: None, cache_time: None, cached_enumerator: None };
+        let s = Self { cached: None, cache_time: None, input_cached: None, input_cache_time: None, cached_enumerator: None };
         // register once per process
         static REGISTERED: AtomicBool = AtomicBool::new(false);
         if !REGISTERED.swap(true, AtomicOrdering::SeqCst) {
@@ -425,10 +427,12 @@ impl RealBackend {
         s
     }
 
-    /// Invalidate the device enumeration cache.
+    /// Invalidate the device enumeration caches (render and capture).
     pub fn clear_cache(&mut self) {
         self.cached = None;
         self.cache_time = None;
+        self.input_cached = None;
+        self.input_cache_time = None;
         // enumerator 保持可用，无需清除；仅设备列表缓存失效
     }
 
@@ -466,7 +470,7 @@ impl RealBackend {
             Err(_) => return snap,
         };
         // devices (带 3000ms 缓存，通知已清除缓存，延长命中)
-        if let Ok(devs) = self.enumerate_devices_inner(&enumerator) {
+        if let Ok(devs) = self.enumerate_devices_inner(&enumerator, eRender) {
             snap.devices = devs;
         }
         // default + volume/mute 用同一个 endpoint
@@ -499,6 +503,11 @@ impl RealBackend {
                 }
             }
         }
+        // capture devices share the cached enumerator; render-only volume/mute untouched.
+        if let Ok(inputs) = self.enumerate_devices_inner(&enumerator, eCapture) {
+            snap.input_devices = inputs;
+        }
+        snap.default_input_device = Self::default_device_with(&self.cached_enumerator, eCapture);
         snap
     }
 
@@ -533,12 +542,18 @@ impl RealBackend {
     fn enumerate_devices_inner(
         &mut self,
         enumerator: &windows::Win32::Media::Audio::IMMDeviceEnumerator,
+        flow: EDataFlow,
     ) -> Result<Vec<AudioDevice>, AudioError> {
         if take_device_changed() {
             self.clear_cache();
         }
-        if let Some(cached) = &self.cached {
-            if let Some(t) = &self.cache_time {
+        let (cache, cache_time) = if flow == eCapture {
+            (&self.input_cached, &self.input_cache_time)
+        } else {
+            (&self.cached, &self.cache_time)
+        };
+        if let Some(cached) = cache {
+            if let Some(t) = cache_time {
                 if t.elapsed() < Duration::from_millis(3000) {
                     return Ok(cached.clone());
                 }
@@ -546,7 +561,7 @@ impl RealBackend {
         }
         unsafe {
             let collection: IMMDeviceCollection = enumerator
-                .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+                .EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE)
                 .map_err(AudioError::from)?;
             let count = collection.GetCount().map_err(AudioError::from)?;
             let mut devices = Vec::new();
@@ -559,8 +574,13 @@ impl RealBackend {
                 }
             }
             // Always update cache, even if empty — UI must see removal vs stale list.
-            self.cached = Some(devices.clone());
-            self.cache_time = Some(Instant::now());
+            if flow == eCapture {
+                self.input_cached = Some(devices.clone());
+                self.input_cache_time = Some(Instant::now());
+            } else {
+                self.cached = Some(devices.clone());
+                self.cache_time = Some(Instant::now());
+            }
             Ok(devices)
         }
     }
@@ -582,6 +602,46 @@ impl RealBackend {
 
     fn get_enumerator() -> windows::core::Result<IMMDeviceEnumerator> {
         unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+    }
+
+    /// Default endpoint for `flow` using the cached enumerator when available.
+    fn default_device_with(
+        cached: &Option<windows::Win32::Media::Audio::IMMDeviceEnumerator>,
+        flow: EDataFlow,
+    ) -> Option<AudioDevice> {
+        unsafe {
+            let enumerator = if let Some(e) = cached {
+                e.clone()
+            } else {
+                Self::get_enumerator().ok()?
+            };
+            let dev = enumerator.GetDefaultAudioEndpoint(flow, eMultimedia).ok()?;
+            let id = Self::device_id(&dev).ok()?;
+            let name = Self::device_friendly_name(&dev);
+            Some(AudioDevice { id, name })
+        }
+    }
+
+    /// Shared validation + `IPolicyConfig` switch for both flows; roles are
+    /// orthogonal to direction, so capture reuses the render role sequence.
+    fn set_default_inner(&mut self, id: &str) -> Result<(), AudioError> {
+        if id.is_empty() || id.contains('\0') {
+            return Err(AudioError::Failed("invalid device id".into()));
+        }
+        unsafe {
+            // Primary role: eMultimedia (0), must succeed.
+            set_default_endpoint_raw(id, eMultimedia.0)
+                .map_err(|e| AudioError::Failed(e.to_string()))?;
+            // Secondary roles: best-effort but log failures (do not hide).
+            for role in [0i32, 2i32] {
+                if let Err(e) = set_default_endpoint_raw(id, role) {
+                    // 0x80070490 = not found, 0x80070057 = invalid arg — don't retry, just warn.
+                    eprintln!("set_default role {role} failed: {e}");
+                }
+            }
+            self.clear_cache();
+            Ok(())
+        }
     }
 
     fn device_id(device: &IMMDevice) -> windows::core::Result<String> {
@@ -648,41 +708,28 @@ impl AudioBackend for RealBackend {
     }
     fn enumerate_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
         let enumerator = self.enumerator_mut().map_err(AudioError::from)?;
-        self.enumerate_devices_inner(&enumerator)
+        self.enumerate_devices_inner(&enumerator, eRender)
+    }
+
+    fn enumerate_input_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
+        let enumerator = self.enumerator_mut().map_err(AudioError::from)?;
+        self.enumerate_devices_inner(&enumerator, eCapture)
     }
 
     fn get_default_device(&self) -> Option<AudioDevice> {
-        unsafe {
-            let enumerator = if let Some(e) = &self.cached_enumerator {
-                e.clone()
-            } else {
-                Self::get_enumerator().ok()?
-            };
-            let dev = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia).ok()?;
-            let id = Self::device_id(&dev).ok()?;
-            let name = Self::device_friendly_name(&dev);
-            Some(AudioDevice { id, name })
-        }
+        Self::default_device_with(&self.cached_enumerator, eRender)
+    }
+
+    fn get_default_input_device(&self) -> Option<AudioDevice> {
+        Self::default_device_with(&self.cached_enumerator, eCapture)
     }
 
     fn set_default_device(&mut self, id: &str) -> Result<(), AudioError> {
-        if id.is_empty() || id.contains('\0') {
-            return Err(AudioError::Failed("invalid device id".into()));
-        }
-        unsafe {
-            // Primary role: eMultimedia (0), must succeed.
-            set_default_endpoint_raw(id, eMultimedia.0)
-                .map_err(|e| AudioError::Failed(e.to_string()))?;
-            // Secondary roles: best-effort but log failures (do not hide).
-            for role in [0i32, 2i32] {
-                if let Err(e) = set_default_endpoint_raw(id, role) {
-                    // 0x80070490 = not found, 0x80070057 = invalid arg — don't retry, just warn.
-                    eprintln!("set_default role {role} failed: {e}");
-                }
-            }
-            self.clear_cache();
-            Ok(())
-        }
+        self.set_default_inner(id)
+    }
+
+    fn set_default_input_device(&mut self, id: &str) -> Result<(), AudioError> {
+        self.set_default_inner(id)
     }
 
     fn get_volume(&self) -> Result<u32, AudioError> {
@@ -796,6 +843,15 @@ impl AudioBackend for RealBackend {
         None
     }
     fn set_default_device(&mut self, _id: &str) -> Result<(), AudioError> {
+        Ok(())
+    }
+    fn enumerate_input_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError> {
+        Ok(vec![])
+    }
+    fn get_default_input_device(&self) -> Option<AudioDevice> {
+        None
+    }
+    fn set_default_input_device(&mut self, _id: &str) -> Result<(), AudioError> {
         Ok(())
     }
     fn get_volume(&self) -> Result<u32, AudioError> {

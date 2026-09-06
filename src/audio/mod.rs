@@ -63,6 +63,23 @@ pub trait AudioBackend {
     /// Returns `AudioError::Failed` if `id` is unknown, `Com` on WASAPI failure.
     fn set_default_device(&mut self, id: &str) -> Result<(), AudioError>;
 
+    /// Enumerate active capture (input) endpoints.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Com` on WASAPI failure.
+    fn enumerate_input_devices(&mut self) -> Result<Vec<AudioDevice>, AudioError>;
+
+    /// Current default capture device, if any.
+    fn get_default_input_device(&self) -> Option<AudioDevice>;
+
+    /// Set the default capture device by `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AudioError::Failed` if `id` is unknown, `Com` on WASAPI failure.
+    fn set_default_input_device(&mut self, id: &str) -> Result<(), AudioError>;
+
     /// Master volume `0..=100`.
     ///
     /// # Errors
@@ -128,9 +145,11 @@ pub trait AudioBackend {
     fn fetch_snapshot_clamped(&mut self, cfg: &AppConfig) -> AudioSnapshot {
         let devices = self.enumerate_devices().unwrap_or_default();
         let default_device = self.get_default_device();
+        let input_devices = self.enumerate_input_devices().unwrap_or_default();
+        let default_input_device = self.get_default_input_device();
         let (volume, mute) = self.get_volume_and_mute().unwrap_or((50, false));
         let volume = crate::config::clamp_volume(volume, cfg);
-        AudioSnapshot { devices, default_device, volume, mute }
+        AudioSnapshot { devices, default_device, input_devices, default_input_device, volume, mute }
     }
 }
 
@@ -142,6 +161,10 @@ pub struct AudioSnapshot {
     pub devices: Vec<AudioDevice>,
     /// Default device, if known.
     pub default_device: Option<AudioDevice>,
+    /// Enumerated capture (input) devices.
+    pub input_devices: Vec<AudioDevice>,
+    /// Default capture device, if known.
+    pub default_input_device: Option<AudioDevice>,
     /// Current volume `0..=100`.
     pub volume: u32,
     /// Mute state.
@@ -150,7 +173,7 @@ pub struct AudioSnapshot {
 
 impl Default for AudioSnapshot {
     fn default() -> Self {
-        Self { devices: Vec::new(), default_device: None, volume: 50, mute: false }
+        Self { devices: Vec::new(), default_device: None, input_devices: Vec::new(), default_input_device: None, volume: 50, mute: false }
     }
 }
 
@@ -201,6 +224,27 @@ mod tests {
         m.volume = 80;
         m.clamp_volume_if_needed(&cfg).unwrap();
         assert_eq!(m.volume, 25);
+    }
+
+    #[test]
+    fn set_default_input_device_mock() {
+        let outs = vec![AudioDevice { id: "a".into(), name: "A".into() }];
+        let ins = vec![
+            AudioDevice { id: "m1".into(), name: "Mic".into() },
+            AudioDevice { id: "m2".into(), name: "Headset Mic".into() },
+        ];
+        let mut m =
+            MockBackend::new(outs, Some("a".into())).with_inputs(ins, Some("m1".into()));
+        assert_eq!(m.get_default_input_device().map(|d| d.id), Some("m1".into()));
+        m.set_default_input_device("m2").unwrap();
+        assert_eq!(m.get_default_input_device().map(|d| d.id), Some("m2".into()));
+        assert!(m.set_default_input_device("nope").is_err());
+        // Output default is untouched by input switching.
+        assert_eq!(m.get_default_device().map(|d| d.id), Some("a".into()));
+        // Snapshot carries both flows.
+        let snap = m.fetch_snapshot_clamped(&AppConfig::default());
+        assert_eq!(snap.input_devices.len(), 2);
+        assert_eq!(snap.default_input_device.map(|d| d.id), Some("m2".into()));
     }
 
     #[test]
