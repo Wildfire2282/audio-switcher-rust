@@ -150,14 +150,14 @@ impl<B: AudioBackend> App<B> {
         // Use batch snapshot to avoid 3 separate COM round-trips.
         let snap = self.backend.fetch_snapshot_clamped(&self.cfg);
         let def_id = snap.default_device.as_ref().map(|d| d.id.as_str());
-        let def_in_id = snap.default_input_device.as_ref().map(|d| d.id.as_str());
+        let def_input_id = snap.default_input_device.as_ref().map(|d| d.id.as_str());
         // In-place menu update; rebuilds only when the device list changed.
         self.tray.sync_menu(
             &self.cfg,
             &snap.devices,
             def_id,
             &snap.input_devices,
-            def_in_id,
+            def_input_id,
             snap.mute,
         );
         self.tray.update_tooltip(format_tooltip(

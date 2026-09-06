@@ -632,7 +632,7 @@ impl RealBackend {
             return Err(AudioError::Failed("invalid device id".into()));
         }
         unsafe {
-            // Primary role: eMultimedia (0), must succeed.
+            // Primary role: eMultimedia (1), must succeed.
             set_default_endpoint_raw(id, eMultimedia.0)
                 .map_err(|e| AudioError::Failed(e.to_string()))?;
             // Secondary roles: best-effort but log failures (do not hide).
@@ -948,5 +948,54 @@ mod volume_notify_tests {
             assert!(!take_volume_changed(), "suppressed self-change raised the flag");
         }
         assert!(fired, "external volume change did not raise the notify flag");
+    }
+
+    /// End-to-end check for the capture path: enumerate `eCapture`
+    /// endpoints, read the default capture device, switch to another
+    /// capture device (or re-set the current one on single-mic machines),
+    /// and restore the original default on scope exit.
+    ///
+    /// Alters the system default capture device while running; the
+    /// original is always restored via RAII.
+    #[test]
+    #[ignore = "requires WASAPI hardware, run with --ignored"]
+    fn integration_capture_enumerate_switch_restores() {
+        use std::time::Duration;
+        let _com = crate::platform::ComGuard::init().expect("COM init");
+        let mut backend = RealBackend::new();
+        backend.clear_cache();
+        let inputs = backend.enumerate_input_devices().expect("capture enumerate");
+        assert!(!inputs.is_empty(), "expected at least one capture device");
+        let current = backend.get_default_input_device().expect("default capture device");
+        assert!(
+            inputs.iter().any(|d| d.id == current.id),
+            "default capture device missing from enumeration"
+        );
+        // RAII: restore the original default even if an assert below panics.
+        struct RestoreCaptureDefault {
+            id: String,
+        }
+        impl Drop for RestoreCaptureDefault {
+            fn drop(&mut self) {
+                let mut backend = RealBackend::new();
+                let _ = backend.set_default_input_device(&self.id);
+            }
+        }
+        let _restore = RestoreCaptureDefault { id: current.id.clone() };
+        // Prefer a different device to prove the switch; fall back to the
+        // current one (idempotent path) on single-mic machines.
+        let target = inputs.iter().find(|d| d.id != current.id).unwrap_or(&current);
+        backend.set_default_input_device(&target.id).expect("switch capture device");
+        // Endpoint switch propagates asynchronously — poll for it.
+        let mut after = None;
+        for _ in 0..40 {
+            backend.clear_cache();
+            after = backend.get_default_input_device();
+            if after.as_ref().is_some_and(|d| d.id == target.id) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(after.map(|d| d.id), Some(target.id.clone()), "capture switch did not apply");
     }
 }

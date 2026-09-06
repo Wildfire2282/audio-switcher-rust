@@ -95,6 +95,9 @@ impl AudioBackend for MockBackend {
         if let Some(e) = self.maybe_fail() {
             return Err(e);
         }
+        // No cache by design: inputs are fixed per-test via `with_inputs`,
+        // while the render-side cache exists to emulate WASAPI round-trips
+        // exercised by `mock_enumerate_cache`.
         Ok(self.input_devices.clone())
     }
 

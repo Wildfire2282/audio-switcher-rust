@@ -105,27 +105,11 @@ impl MenuHandles {
         if self.lang != cfg.lang {
             return false;
         }
-        if self.device_items.len() != devices.len() {
+        if !sync_entries(&self.device_items, devices, default_id) {
             return false;
         }
-        if self.input_items.len() != inputs.len() {
+        if !sync_entries(&self.input_items, inputs, default_input_id) {
             return false;
-        }
-        for (dev, (key, name, _)) in devices.iter().zip(&self.device_items) {
-            if Self::sanitize_id(&dev.id) != *key || dev.name != *name {
-                return false;
-            }
-        }
-        for (dev, (key, name, _)) in inputs.iter().zip(&self.input_items) {
-            if Self::sanitize_id(&dev.id) != *key || dev.name != *name {
-                return false;
-            }
-        }
-        for (dev, (_, _, item)) in devices.iter().zip(&self.device_items) {
-            item.set_checked(default_id == Some(dev.id.as_str()));
-        }
-        for (dev, (_, _, item)) in inputs.iter().zip(&self.input_items) {
-            item.set_checked(default_input_id == Some(dev.id.as_str()));
         }
         self.mute.set_checked(muted);
         self.vol_enabled.set_checked(cfg.volume_limit_enabled);
@@ -138,6 +122,53 @@ impl MenuHandles {
         self.lang_en.set_checked(cfg.lang == Lang::En);
         true
     }
+}
+
+/// Build `(key, name, item)` entries for `devices` with `prefix`.
+///
+/// The key is the sanitized endpoint id used for change detection.
+fn check_entries(
+    devices: &[AudioDevice],
+    prefix: &str,
+    default_id: Option<&str>,
+) -> Vec<(String, String, CheckMenuItem)> {
+    devices
+        .iter()
+        .map(|dev| {
+            let checked = default_id == Some(dev.id.as_str());
+            let item = CheckMenuItem::with_id(
+                format!("{prefix}{}", MenuHandles::sanitize_id(&dev.id)),
+                truncate_label(&dev.name, MAX_LABEL_CHARS),
+                true,
+                checked,
+                None,
+            );
+            (MenuHandles::sanitize_id(&dev.id), dev.name.clone(), item)
+        })
+        .collect()
+}
+
+/// Refresh `entries` against `devices` in place.
+///
+/// Returns `false` when a full rebuild is required (count, order, id, or
+/// name changed); otherwise updates the checks and returns `true`.
+fn sync_entries(
+    entries: &[(String, String, CheckMenuItem)],
+    devices: &[AudioDevice],
+    default_id: Option<&str>,
+) -> bool {
+    if entries.len() != devices.len() {
+        return false;
+    }
+    for (dev, (key, name, _)) in devices.iter().zip(entries) {
+        if MenuHandles::sanitize_id(&dev.id) != *key || dev.name != *name {
+            return false;
+        }
+    }
+    for (dev, (_, _, item)) in devices.iter().zip(entries) {
+        item.set_checked(default_id == Some(dev.id.as_str()));
+    }
+    true
 }
 
 /// Build the tray menu for `cfg` / `devices`.
@@ -154,35 +185,11 @@ pub fn build_menu(
 ) -> MenuHandles {
     let lang = cfg.lang;
 
-    let device_items: Vec<CheckMenuItem> = devices
-        .iter()
-        .map(|dev| {
-            let checked = default_id == Some(dev.id.as_str());
-            CheckMenuItem::with_id(
-                format!("{DEVICE_PREFIX}{}", MenuHandles::sanitize_id(&dev.id)),
-                truncate_label(&dev.name, MAX_LABEL_CHARS),
-                true,
-                checked,
-                None,
-            )
-        })
-        .collect();
+    let device_items = check_entries(devices, DEVICE_PREFIX, default_id);
 
     let mute = CheckMenuItem::with_id(id::MUTE, tr("mute", lang), true, muted, None);
 
-    let input_items: Vec<CheckMenuItem> = inputs
-        .iter()
-        .map(|dev| {
-            let checked = default_input_id == Some(dev.id.as_str());
-            CheckMenuItem::with_id(
-                format!("{INPUT_PREFIX}{}", MenuHandles::sanitize_id(&dev.id)),
-                truncate_label(&dev.name, MAX_LABEL_CHARS),
-                true,
-                checked,
-                None,
-            )
-        })
-        .collect();
+    let input_items = check_entries(inputs, INPUT_PREFIX, default_input_id);
     // Disabled section header; id avoids the `input_` prefix so the handler
     // never parses it as a device action even if it were clickable.
     let input_header = MenuItem::with_id("inputs_header", tr("input_devices", lang), false, None);
@@ -227,7 +234,7 @@ pub fn build_menu(
     let exit = MenuItem::with_id(id::EXIT, tr("exit", lang), true, None);
 
     let menu = Menu::new();
-    for item in &device_items {
+    for (_, _, item) in &device_items {
         let _ = menu.append(item);
     }
     if !device_items.is_empty() {
@@ -235,7 +242,7 @@ pub fn build_menu(
     }
     if !input_items.is_empty() {
         let _ = menu.append(&input_header);
-        for item in &input_items {
+        for (_, _, item) in &input_items {
             let _ = menu.append(item);
         }
         let _ = menu.append(&PredefinedMenuItem::separator());
@@ -254,16 +261,8 @@ pub fn build_menu(
 
     MenuHandles {
         menu,
-        device_items: devices
-            .iter()
-            .zip(device_items)
-            .map(|(dev, item)| (MenuHandles::sanitize_id(&dev.id), dev.name.clone(), item))
-            .collect(),
-        input_items: inputs
-            .iter()
-            .zip(input_items)
-            .map(|(dev, item)| (MenuHandles::sanitize_id(&dev.id), dev.name.clone(), item))
-            .collect(),
+        device_items,
+        input_items,
         lang,
         mute,
         vol_enabled,

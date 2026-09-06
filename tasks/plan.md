@@ -22,6 +22,13 @@
 - 验收：新增 `set_default_input_device_mock`、`parse_input_device`、`sync_state_tracks_input_devices`；`cargo test` 全量通过；`cargo build`、`cargo clippy`、`cargo fmt --check` 通过。
 - 不做：输入端音量/静音控制仍走输出默认端，不动音量上限、滚轮、通知链路。
 
+## 评审整改（新增）：五维评审发现全修复 — 已完成
+
+- 补 `integration_capture_enumerate_switch_restores`（`#[ignore]` 真机测试，RAII 恢复默认采集端）。
+- `menu.rs` 提取 `check_entries`/`sync_entries`，消解输出与输入两处重复。
+- `Mock` 采集无缓存改Shutdown为注释说明设计意图；`def_in_id` 改名 `def_input_id`；`eMultimedia (0)` 勘误为 `(1)`。
+- `cargo test` / `cargo clippy` / `cargo fmt --check` 全通过。
+
 ## Task 3：滚轮 `total_step` 符号与大增量边界复核 — 已完成
 
 - 仅补单测，不改算法；如发现行为偏差另立任务。
