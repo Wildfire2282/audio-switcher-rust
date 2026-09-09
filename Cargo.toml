@@ -1,0 +1,91 @@
+[package]
+name = "audio-switcher"
+version = "0.4.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Audio Switcher tray tool"
+repository = "https://github.com/Wildfire2282/audio-switcher"
+readme = "README.md"
+license = "MIT"
+keywords = ["audio", "tray", "windows", "switcher"]
+categories = ["os::windows"]
+
+[lib]
+name = "audio_switcher"
+path = "src/lib.rs"
+
+[dependencies]
+tray-icon = "0.24.2"
+muda = "0.19.3"
+auto-launch = "0.6.0"
+single-instance = "0.3.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+# tracing-subscriber lives here (not dev-deps): the release binary file sink
+# links it at runtime; dev-deps do not link into binaries. Sync via std only
+# (§1.2); all Windows API surface resolves via the `windows` crate.
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+[dependencies.windows]
+version = "0.62.2"
+features = [
+  # §4-mapped minimum subset (each removal verified with `cargo check`):
+  "Win32_Foundation", # hook proc types, HWND/WPARAM/LPARAM/LRESULT (hook, dialog, pump)
+  "Win32_UI_WindowsAndMessaging", # MessageBoxW, pump/wait/quit, SetWindowPos, FindWindow (dialog, pump, hook)
+  "Win32_UI_Shell", # ShellExecuteW for open_url/system tools (shell)
+  "Win32_Media_Audio_Endpoints", # IAudioEndpointVolume + callback (real)
+  "Win32_UI_Shell_PropertiesSystem", # IPropertyStore for device friendly names (real)
+  "Win32_System_Com_StructuredStorage", # PropVariantClear for friendly names (real)
+  "Win32_System_Variant", # VT_LPWSTR (real)
+  "Win32_Media_Audio", # MMDeviceEnumerator, IMMNotificationClient (real)
+  "Win32_Media_Audio_Endpoints", # IAudioEndpointVolume + callback (real)
+  "Win32_Devices_FunctionDiscovery", # PKEY_Device_FriendlyName (real)
+  "Win32_System_Registry", # legacy autostart Run-value cleanup only (autostart)
+  "Win32_Graphics_Gdi", # MonitorFromWindow for dialog centering (dialog)
+  "Win32_System_SystemInformation", # GetTickCount64 monotonic clock (real)
+  "Win32_Globalization", # GetUserDefaultLocaleName for Lang::System (locale)
+]
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[build-dependencies]
+embed-manifest = "1.4"
+winres = "0.1.12"
+
+[lints.rust]
+unexpected_cfgs = "warn"
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+correctness = { level = "deny", priority = 1 }
+suspicious = { level = "warn", priority = 1 }
+style = { level = "warn", priority = 1 }
+complexity = { level = "warn", priority = 1 }
+perf = { level = "warn", priority = 1 }
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "unwind"
+incremental = false
+overflow-checks = true
+
+[profile.dev]
+overflow-checks = true
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.bench]
+inherits = "release"
+debug = true
+strip = false
+panic = "unwind"

@@ -1,0 +1,38 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Build outputs (single-file delivery: the exe ships via Releases, never git)
+/*.exe
+**/*.exe
+**/*.pdb
+
+# Agent / local cache
+/.opencode/
+/.tmp/
+
+# Tauri / Node (预留)
+node_modules/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Local reference checklists (not part of repo)
+# references/ + AGENTS.md 仅本地清单；docs/ 下 release-notes 必须入库，禁忽略
+references/
+AGENTS.md
