@@ -9,6 +9,7 @@ pub mod autostart;
 pub mod com;
 pub mod dialog;
 pub mod hook;
+pub mod hotkey;
 pub mod instance;
 pub mod locale;
 pub mod logging;

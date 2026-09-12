@@ -1,5 +1,7 @@
 //! Menu action dispatch — maps `muda` IDs to typed actions.
 
+use crate::platform::hotkey::HotkeyAction;
+
 /// Typed menu action parsed from a `MenuEvent` ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
@@ -21,6 +23,8 @@ pub enum MenuAction {
     OpenSound,
     /// Toggle autostart.
     Autostart,
+    /// Bind/unbind the default combination for `action`.
+    HotkeyToggle(HotkeyAction),
     /// Follow the system language.
     LangSystem,
     /// Switch language to Chinese.
@@ -59,6 +63,9 @@ impl MenuAction {
         if let Some(preset) = menu_id::parse_vol_preset(id) {
             return Self::VolLimit(preset);
         }
+        if let Some(action) = menu_id::parse_hotkey(id) {
+            return Self::HotkeyToggle(action);
+        }
         match id {
             menu_id::REFRESH => Self::Refresh,
             menu_id::MUTE => Self::Mute,
@@ -96,6 +103,21 @@ mod tests {
             MenuAction::from_id("unknown"),
             MenuAction::Unknown(_)
         ));
+    }
+
+    #[test]
+    fn parse_hotkey_toggles() {
+        for action in HotkeyAction::ALL {
+            let id = crate::ui::menu::id::hotkey(action);
+            assert_eq!(MenuAction::from_id(&id), MenuAction::HotkeyToggle(action));
+        }
+        // The submenu id and unknown suffixes stay Unknown.
+        for id in ["hotkeys", "hotkey_", "hotkey_bogus", "hotkey_volume"] {
+            assert!(
+                matches!(MenuAction::from_id(id), MenuAction::Unknown(_)),
+                "{id}"
+            );
+        }
     }
 
     #[test]

@@ -10,6 +10,7 @@
 # Agent / local cache
 /.opencode/
 /.tmp/
+/.omp/
 
 # Tauri / Node (预留)
 node_modules/

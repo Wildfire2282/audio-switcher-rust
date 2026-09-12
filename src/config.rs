@@ -12,10 +12,13 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use crate::platform::hotkey::{Hotkey, HotkeyAction};
+
 /// Current config schema version. v2 migrates the v1 `Zh` default to
 /// `System` (v1 could not distinguish an explicit `zh` choice from the old
-/// default, so explicit `zh` users re-pick once).
-const CURRENT_VERSION: u32 = 2;
+/// default, so explicit `zh` users re-pick once). v3 adds the opt-in
+/// `hotkeys` object (absent in older files → every hotkey off).
+const CURRENT_VERSION: u32 = 3;
 
 /// Legacy (v1, PascalCase) config filename for one-time import.
 const LEGACY_DIR_NAME: &str = "AudioSwitcher";
@@ -129,6 +132,88 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Hotkeys
+// ---------------------------------------------------------------------------
+
+/// Global-hotkey opt-ins, one combination string per [`HotkeyAction`].
+///
+/// Combinations are stored in canonical form (`"Ctrl+Alt+M"`) so `config.json`
+/// stays human-editable; `null`/absent means "no hotkey". [`AppConfig::migrate`]
+/// canonicalizes what it can read and drops an unparsable value with a warning
+/// (a bad combo never reaches `RegisterHotKey`).
+///
+/// # Examples
+///
+/// ```
+/// use audio_switcher::config::Hotkeys;
+/// assert_eq!(Hotkeys::default().mute, None);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Hotkeys {
+    /// Toggle the default output device's mute.
+    pub mute: Option<String>,
+    /// Raise the master volume one step.
+    pub volume_up: Option<String>,
+    /// Lower the master volume one step.
+    pub volume_down: Option<String>,
+    /// Switch to the next output device.
+    pub next_device: Option<String>,
+    /// Switch to the previous output device.
+    pub prev_device: Option<String>,
+}
+
+impl Hotkeys {
+    /// Combination bound to `action`, if the action is switched on.
+    #[must_use]
+    pub fn get(&self, action: HotkeyAction) -> Option<&str> {
+        match action {
+            HotkeyAction::Mute => self.mute.as_deref(),
+            HotkeyAction::VolumeUp => self.volume_up.as_deref(),
+            HotkeyAction::VolumeDown => self.volume_down.as_deref(),
+            HotkeyAction::NextDevice => self.next_device.as_deref(),
+            HotkeyAction::PrevDevice => self.prev_device.as_deref(),
+        }
+    }
+
+    /// Bind (`Some`) or clear (`None`) `action`'s combination.
+    pub fn set(&mut self, action: HotkeyAction, combo: Option<String>) {
+        let slot = match action {
+            HotkeyAction::Mute => &mut self.mute,
+            HotkeyAction::VolumeUp => &mut self.volume_up,
+            HotkeyAction::VolumeDown => &mut self.volume_down,
+            HotkeyAction::NextDevice => &mut self.next_device,
+            HotkeyAction::PrevDevice => &mut self.prev_device,
+        };
+        *slot = combo;
+    }
+
+    /// Canonicalize every slot: trim, drop empties, reject unparsable combos.
+    fn normalize(&mut self) {
+        for action in HotkeyAction::ALL {
+            let Some(raw) = self.get(action).map(str::to_owned) else {
+                continue;
+            };
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                self.set(action, None);
+                continue;
+            }
+            match trimmed.parse::<Hotkey>() {
+                Ok(hotkey) => self.set(action, Some(hotkey.to_string())),
+                Err(e) => {
+                    tracing::warn!(
+                        "hotkey for {} ignored ({e}); value {raw:?} is not a supported combination",
+                        action.config_key()
+                    );
+                    self.set(action, None);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AppConfig
 // ---------------------------------------------------------------------------
 
@@ -168,6 +253,9 @@ pub struct AppConfig {
     /// Whether to register for auto-launch at login.
     #[serde(default = "default_autostart")]
     pub autostart: bool,
+    /// Global hotkey bindings; every action is off unless a combo is set.
+    #[serde(default)]
+    pub hotkeys: Hotkeys,
 }
 
 fn default_version() -> u32 {
@@ -194,6 +282,7 @@ impl Default for AppConfig {
             volume_limit_enabled: default_volume_limit_enabled(),
             volume_limit: default_volume_limit(),
             autostart: default_autostart(),
+            hotkeys: Hotkeys::default(),
         }
     }
 }
@@ -325,16 +414,20 @@ impl AppConfig {
         }
     }
 
-    /// Migrate older schemas: bump the version, clamp the limit, and move
-    /// the v1 `Zh` default to `System`.
+    /// Migrate older schemas: bump the version, clamp the limit, move the v1
+    /// `Zh` default to `System`, and canonicalize the hotkey combos.
     fn migrate(mut cfg: Self) -> Self {
-        if cfg.version < CURRENT_VERSION && cfg.lang == Lang::Zh {
+        // Scope to v1: that schema could not tell an explicit `zh` choice
+        // apart from its own default, so its `zh` re-picks once. From v2 on,
+        // `zh` is an explicit choice and must survive (SPEC §4).
+        if cfg.version < 2 && cfg.lang == Lang::Zh {
             cfg.lang = Lang::System;
         }
         cfg.version = CURRENT_VERSION;
         if !(1..=100).contains(&cfg.volume_limit) {
             cfg.volume_limit = default_volume_limit();
         }
+        cfg.hotkeys.normalize();
         cfg
     }
 
@@ -672,5 +765,89 @@ mod tests {
         assert_eq!(loaded.volume_limit, 50);
         // Second run is a no-op (new path exists now).
         assert!(!import_legacy_file(&new_path, &legacy_path));
+    }
+
+    /// Load `raw` from a fresh temp file, returning the config plus its dir.
+    fn load_raw(raw: &str) -> (AppConfig, tempfile::TempDir) {
+        let dir = tempdir().unwrap();
+        let path = AppConfig::config_path_for(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, raw).unwrap();
+        (AppConfig::load_from(&path), dir)
+    }
+
+    #[test]
+    fn hotkeys_off_by_default_and_migrated_from_v2() {
+        // A v2 file has no `hotkeys` object: nothing is bound, and the file
+        // is only renumbered (no hotkey is invented on migration).
+        let (cfg, _dir) = load_raw(
+            r#"{"version":2,"lang":"en","volume_limit_enabled":true,"volume_limit":25,"autostart":true}"#,
+        );
+        assert_eq!(cfg.version, CURRENT_VERSION);
+        assert_eq!(cfg.hotkeys, Hotkeys::default());
+        for action in HotkeyAction::ALL {
+            assert_eq!(cfg.hotkeys.get(action), None);
+        }
+    }
+
+    #[test]
+    fn hotkey_combos_are_canonicalized() {
+        let (cfg, _dir) = load_raw(
+            r#"{"version":3,"lang":"en","volume_limit_enabled":true,"volume_limit":25,"autostart":true,
+                "hotkeys":{"mute":"ctrl+alt+m","volume_up":" ALT + Ctrl + Up ","volume_down":"","prev_device":null}}"#,
+        );
+        assert_eq!(cfg.hotkeys.get(HotkeyAction::Mute), Some("Ctrl+Alt+M"));
+        assert_eq!(cfg.hotkeys.get(HotkeyAction::VolumeUp), Some("Ctrl+Alt+Up"));
+        // Empty and null both mean "off"; nothing is bound implicitly.
+        assert_eq!(cfg.hotkeys.get(HotkeyAction::VolumeDown), None);
+        assert_eq!(cfg.hotkeys.get(HotkeyAction::PrevDevice), None);
+    }
+
+    #[test]
+    fn invalid_hotkey_combo_dropped_without_resetting_the_file() {
+        // A bad combo (no modifier) disables just that action; the rest of the
+        // file survives (unlike an unknown field, which resets).
+        let (cfg, _dir) = load_raw(
+            r#"{"version":3,"lang":"en","volume_limit_enabled":true,"volume_limit":50,"autostart":false,
+                "hotkeys":{"mute":"M","next_device":"Ctrl+Alt+Right"}}"#,
+        );
+        assert_eq!(cfg.hotkeys.get(HotkeyAction::Mute), None);
+        assert_eq!(
+            cfg.hotkeys.get(HotkeyAction::NextDevice),
+            Some("Ctrl+Alt+Right")
+        );
+        assert_eq!(cfg.volume_limit, 50);
+        assert!(!cfg.autostart);
+    }
+
+    #[test]
+    fn unknown_hotkey_field_rejected_loudly() {
+        // A typo inside `hotkeys` is a config error, not a silent no-op.
+        let (cfg, dir) = load_raw(
+            r#"{"version":3,"lang":"en","volume_limit_enabled":true,"volume_limit":25,"autostart":true,
+                "hotkeys":{"mutee":"Ctrl+Alt+M"}}"#,
+        );
+        assert_eq!(cfg, AppConfig::default());
+        let backup = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().contains(".bak."));
+        assert!(backup, "corrupt config must leave a backup");
+    }
+
+    #[test]
+    fn hotkey_toggle_default_combo_round_trips_through_config() {
+        // The menu binds `default_combo()`; storing it must survive a reload
+        // byte-identically (otherwise the menu would show a different combo).
+        let mut cfg = AppConfig::default();
+        for action in HotkeyAction::ALL {
+            let combo = action.default_combo().parse::<Hotkey>().unwrap();
+            cfg.hotkeys.set(action, Some(combo.to_string()));
+        }
+        let dir = tempdir().unwrap();
+        let path = AppConfig::config_path_for(dir.path());
+        cfg.save_to(&path).unwrap();
+        let loaded = AppConfig::load_from(&path);
+        assert_eq!(loaded.hotkeys, cfg.hotkeys);
     }
 }

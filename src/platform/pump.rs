@@ -13,7 +13,7 @@ pub(crate) fn pump_messages() {
     #[cfg(windows)]
     {
         use windows::Win32::UI::WindowsAndMessaging::{
-            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_HOTKEY,
         };
         loop {
             let mut msg = MSG::default();
@@ -22,6 +22,13 @@ pub(crate) fn pump_messages() {
             let pending = unsafe { PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE).as_bool() };
             if !pending {
                 break;
+            }
+            if msg.message == WM_HOTKEY {
+                // `RegisterHotKey(None, ..)` binds to this thread and posts
+                // `WM_HOTKEY` with a null window: `DispatchMessageW` would
+                // drop it, so route the action to the hotkey module instead.
+                crate::platform::hotkey::note_pending(msg.wParam.0 as i32);
+                continue;
             }
             // SAFETY: `msg` was just written by `PeekMessageW` above.
             let _ = unsafe { TranslateMessage(&raw const msg) };

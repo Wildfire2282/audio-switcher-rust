@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use crate::audio::{AudioBackend, RealBackend};
 use crate::config::{AppConfig, Lang};
 use crate::platform::hook;
+use crate::platform::hotkey::{self, Hotkey, HotkeyAction, HotkeyError};
 use crate::platform::{AutostartState, autostart_state, pump};
+use crate::ui::i18n::tr;
 use crate::ui::tray::TrayError;
 use crate::ui::{MenuState, TrayWrapper, WheelState, format_tooltip};
 use handler::MenuAction;
@@ -19,10 +21,32 @@ use handler::MenuAction;
 const TRAY_BOOT_ATTEMPTS: u32 = 3;
 /// Pause between tray-build attempts (bounded: 3 × 250ms worst case).
 const TRAY_BOOT_RETRY_WAIT: Duration = Duration::from_millis(250);
-/// Volume-adjust arm window: a left-click on the tray icon arms wheel control
-/// for this long; every wheel tick re-arms, so continuous rolling never drops
-/// mid-gesture while a stale click cannot change volume minutes later.
-const VOLUME_ARM_DURATION: Duration = Duration::from_secs(3);
+/// Volume percent per global-hotkey press (EarTrumpet parity: its
+/// absolute-volume shortcuts step 2).
+const HOTKEY_VOLUME_STEP: i32 = 2;
+
+/// Index of the device `step` positions from `current`, wrapping at both ends.
+///
+/// `None` only for an empty list; an unknown/absent `current` starts at the
+/// first device, so cycling always produces a usable index.
+#[must_use]
+fn cycle_index(len: usize, current: Option<usize>, step: i32) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let start = i32::try_from(current.unwrap_or(0)).unwrap_or(0);
+    let len = i32::try_from(len).unwrap_or(i32::MAX);
+    Some((start + step).rem_euclid(len) as usize)
+}
+
+/// Apply one `delta` percent to `volume`, clamped to the `0..=100` invariant.
+///
+/// `i64` math: neither a wheel burst nor `i32::MIN` can wrap, and the clamp
+/// keeps a lying backend from pushing the tray past 100.
+#[must_use]
+fn stepped_volume(volume: u32, delta: i32) -> u32 {
+    u32::try_from((i64::from(volume) + i64::from(delta)).clamp(0, 100)).unwrap_or(0)
+}
 
 /// Self-heal the autostart entry when the user wants it but the registry
 /// reads explicit `Disabled`. `Unknown` never writes — it only logs; the
@@ -48,9 +72,39 @@ fn ensure_autostart(cfg: &AppConfig) {
     }
 }
 
-/// Whether wheel control is currently armed (`now` is before the deadline).
-fn is_armed(armed_until: Option<Instant>, now: Instant) -> bool {
-    armed_until.is_some_and(|deadline| now < deadline)
+/// Bind the configured hotkeys, reporting (and disabling) occupied combos.
+///
+/// An occupied combination is never silently dropped: the affected actions are
+/// cleared in `cfg` — so the menu reflects what is actually bound — persisted,
+/// and surfaced in one dialog listing every conflict.
+fn apply_hotkeys(cfg: &mut AppConfig) {
+    let mut bindings: Vec<(HotkeyAction, Hotkey)> = Vec::new();
+    for action in HotkeyAction::ALL {
+        let Some(raw) = cfg.hotkeys.get(action) else {
+            continue;
+        };
+        match raw.parse::<Hotkey>() {
+            Ok(hotkey) => bindings.push((action, hotkey)),
+            // `migrate` already drops unparsable combos; a value that reaches
+            // this point (hand-edited file without a reload) stays off.
+            Err(e) => tracing::warn!("hotkey for {} skipped: {e}", action.config_key()),
+        }
+    }
+    let Err(HotkeyError(occupied)) = hotkey::register_all(&bindings) else {
+        return;
+    };
+    for (action, _) in &occupied {
+        cfg.hotkeys.set(*action, None);
+    }
+    if let Err(e) = cfg.save_to(&AppConfig::config_path()) {
+        tracing::warn!("config save failed after hotkey conflict: {e}");
+    }
+    crate::platform::dialog::show_msgbox(&format!(
+        "{}: some hotkeys are already in use by another program and were disabled:\n\n{}\n\nEdit {} to pick another combination.",
+        crate::TOOL_DISPLAY_NAME,
+        hotkey::summarize(&occupied),
+        AppConfig::config_path().display(),
+    ));
 }
 
 /// App owns all runtime state. Generic over [`AudioBackend`] for test injection.
@@ -61,9 +115,6 @@ pub struct App<B: AudioBackend = RealBackend> {
     backend: B,
     tray: TrayWrapper,
     wheel: WheelState,
-    /// Wheel-control arm deadline set by left-click; `None` means disarmed.
-    /// Hover alone never arms: without a preceding left-click the wheel is ignored.
-    volume_armed_until: Option<Instant>,
     last_devices_rebuild: Instant,
     hook: Option<hook::WheelHook>,
     hook_install_at: Instant,
@@ -139,11 +190,13 @@ impl<B: AudioBackend> App<B> {
     /// bound keeps a broken install from hanging startup — the surviving
     /// error propagates for a visible dialog + exit, never a panic.
     fn assemble(
-        cfg: AppConfig,
+        mut cfg: AppConfig,
         mut backend: B,
         com: crate::platform::ComGuard,
     ) -> Result<Self, TrayError> {
         ensure_autostart(&cfg);
+        // Register before the first menu build so its checks match reality.
+        apply_hotkeys(&mut cfg);
         let ui_lang = cfg.effective_lang();
         let autostart = autostart_state();
         let boot = MenuState {
@@ -198,7 +251,6 @@ impl<B: AudioBackend> App<B> {
             backend,
             tray,
             wheel: WheelState::new(),
-            volume_armed_until: None,
             last_devices_rebuild: Instant::now(),
             hook: None,
             hook_install_at: Instant::now() + Duration::from_millis(180),
@@ -276,43 +328,10 @@ impl<B: AudioBackend> App<B> {
     }
 
     fn handle_menu(&mut self, id: &str) {
-        use crate::ui::i18n::tr;
         match MenuAction::from_id(id) {
-            MenuAction::Device(dev_id) => match self.backend.set_default_device(&dev_id) {
-                Ok(()) => {
-                    if let Err(e) = self.backend.clamp_volume_if_needed(&self.cfg) {
-                        tracing::warn!("volume clamp failed: {e}");
-                    }
-                    self.refresh_ui();
-                }
-                Err(e) => {
-                    tracing::warn!("set_default_device failed: {e}");
-                    crate::platform::dialog::show_msgbox(&format!(
-                        "{}: {e}",
-                        tr("device_error", self.lang())
-                    ));
-                }
-            },
-            MenuAction::InputDevice(dev_id) => match self.backend.set_default_input_device(&dev_id)
-            {
-                Ok(()) => self.refresh_ui(),
-                Err(e) => {
-                    tracing::warn!("set_default_input_device failed: {e}");
-                    crate::platform::dialog::show_msgbox(&format!(
-                        "{}: {e}",
-                        tr("input_error", self.lang())
-                    ));
-                }
-            },
-            MenuAction::Mute => match self.backend.get_mute() {
-                Ok(m) => {
-                    if let Err(e) = self.backend.set_mute(!m) {
-                        tracing::warn!("set_mute failed: {e}");
-                    }
-                    self.refresh_ui();
-                }
-                Err(e) => tracing::warn!("get_mute failed: {e}"),
-            },
+            MenuAction::Device(dev_id) => self.set_default_output(&dev_id),
+            MenuAction::InputDevice(dev_id) => self.set_default_input(&dev_id),
+            MenuAction::Mute => self.toggle_mute(),
             MenuAction::VolEnabled => {
                 self.cfg.volume_limit_enabled = !self.cfg.volume_limit_enabled;
                 self.save_and_refresh(true);
@@ -347,6 +366,19 @@ impl<B: AudioBackend> App<B> {
                     }
                 }
             }
+            MenuAction::HotkeyToggle(action) => {
+                // Menu toggle binds the action's default combo or clears it;
+                // custom combos are edited in config.json.
+                self.cfg.hotkeys.set(
+                    action,
+                    match self.cfg.hotkeys.get(action) {
+                        Some(_) => None,
+                        None => Some(action.default_combo().to_string()),
+                    },
+                );
+                apply_hotkeys(&mut self.cfg);
+                self.save_and_refresh(false);
+            }
             MenuAction::LangSystem => {
                 self.cfg.lang = Lang::System;
                 self.ui_lang = self.cfg.effective_lang();
@@ -380,23 +412,113 @@ impl<B: AudioBackend> App<B> {
         }
     }
 
+    // ---- shared actions: menu dispatch and global hotkeys both land here ----
+    /// Switch the default output device, then re-apply the volume limit.
+    fn set_default_output(&mut self, id: &str) {
+        match self.backend.set_default_device(id) {
+            Ok(()) => {
+                if let Err(e) = self.backend.clamp_volume_if_needed(&self.cfg) {
+                    tracing::warn!("volume clamp failed: {e}");
+                }
+                self.refresh_ui();
+            }
+            Err(e) => {
+                tracing::warn!("set_default_device failed: {e}");
+                crate::platform::dialog::show_msgbox(&format!(
+                    "{}: {e}",
+                    crate::ui::i18n::tr("device_error", self.lang())
+                ));
+            }
+        }
+    }
+
+    /// Switch the default input (capture) device.
+    fn set_default_input(&mut self, id: &str) {
+        match self.backend.set_default_input_device(id) {
+            Ok(()) => self.refresh_ui(),
+            Err(e) => {
+                tracing::warn!("set_default_input_device failed: {e}");
+                crate::platform::dialog::show_msgbox(&format!(
+                    "{}: {e}",
+                    crate::ui::i18n::tr("input_error", self.lang())
+                ));
+            }
+        }
+    }
+
+    /// Toggle the default output device's mute.
+    fn toggle_mute(&mut self) {
+        match self.backend.get_mute() {
+            Ok(m) => {
+                if let Err(e) = self.backend.set_mute(!m) {
+                    tracing::warn!("set_mute failed: {e}");
+                }
+                self.refresh_ui();
+            }
+            Err(e) => tracing::warn!("get_mute failed: {e}"),
+        }
+    }
+
+    /// Nudge the master volume by `delta` percent and refresh the tray.
+    ///
+    /// Shared by the wheel (accelerated step) and the volume hotkeys (fixed
+    /// [`HOTKEY_VOLUME_STEP`]); the configured limit clamps the result.
+    fn nudge_volume(&mut self, delta: i32) {
+        match self.backend.get_volume() {
+            Ok(vol) => {
+                let clamped = crate::config::clamp_volume(stepped_volume(vol, delta), &self.cfg);
+                if let Err(e) = self.backend.set_volume(clamped) {
+                    tracing::warn!(error = %e, "set_volume failed");
+                }
+                self.update_tooltip_and_icon();
+            }
+            Err(e) => tracing::warn!(error = %e, "get_volume failed"),
+        }
+    }
+
+    /// Switch to the default output `step` positions away, wrapping at both
+    /// ends (the device list order is the Windows enumeration order).
+    fn cycle_device(&mut self, step: i32) {
+        let devices = match self.backend.enumerate_devices() {
+            Ok(devices) => devices,
+            Err(e) => {
+                tracing::warn!("enumerate_devices failed: {e}");
+                return;
+            }
+        };
+        let current = self
+            .backend
+            .get_default_device()
+            .and_then(|default| devices.iter().position(|dev| dev.id == default.id));
+        let Some(index) = cycle_index(devices.len(), current, step) else {
+            tracing::warn!("no output device to cycle through");
+            return;
+        };
+        let id = devices[index].id.clone();
+        self.set_default_output(&id);
+    }
+
+    /// Dispatch one global hotkey through the same paths as the menu items.
+    fn handle_hotkey(&mut self, action: HotkeyAction) {
+        tracing::debug!("hotkey pressed: {}", action.config_key());
+        match action {
+            HotkeyAction::Mute => self.toggle_mute(),
+            HotkeyAction::VolumeUp => self.nudge_volume(HOTKEY_VOLUME_STEP),
+            HotkeyAction::VolumeDown => self.nudge_volume(-HOTKEY_VOLUME_STEP),
+            HotkeyAction::NextDevice => self.cycle_device(1),
+            HotkeyAction::PrevDevice => self.cycle_device(-1),
+        }
+    }
+
     // ---- handlers extracted to keep `run` short ----
     fn maybe_install_hook(&mut self) {
         if self.hook.is_none() && Instant::now() >= self.hook_install_at {
             self.hook = hook::WheelHook::install();
         }
     }
-    /// Arm wheel control for [`VOLUME_ARM_DURATION`], resetting acceleration
-    /// so a stale burst cannot jump the volume, and refresh the tooltip so
-    /// the click gives visible feedback (current device + volume).
-    fn arm_volume(&mut self) {
-        self.volume_armed_until = Some(Instant::now() + VOLUME_ARM_DURATION);
-        self.wheel.clear();
-        self.update_tooltip_and_icon();
-    }
-    /// Drop the arm (cursor left the icon, or the menu took over the gesture).
-    fn disarm_volume(&mut self) {
-        self.volume_armed_until = None;
+    /// Reset wheel acceleration so a stale burst cannot jump the volume
+    /// (fresh hover, menu takeover, or cursor leave).
+    fn reset_wheel(&mut self) {
         self.wheel.clear();
     }
     fn poll_tray(&mut self) {
@@ -419,36 +541,27 @@ impl<B: AudioBackend> App<B> {
                         }
                         Err(e) => tracing::warn!(error = %e, "get_mute failed"),
                     }
-                    // Mute never arms: volume still needs its own left-click.
-                    self.wheel.clear();
+                    self.reset_wheel();
                 }
-                // Left-click arms wheel control; the wheel only works inside
-                // the arm window, so hovering or scrolling past never changes
-                // the volume by accident.
-                TrayIconEvent::Click {
-                    button: MouseButton::Left,
-                    button_state: MouseButtonState::Up,
-                    ..
-                }
-                | TrayIconEvent::DoubleClick {
-                    button: MouseButton::Left,
-                    ..
-                } => self.arm_volume(),
-                // Right-click hands the gesture to the context menu: a wheel
-                // roll over the open menu must scroll the menu, not the volume.
-                TrayIconEvent::Click {
-                    button: MouseButton::Right,
-                    ..
-                }
-                | TrayIconEvent::DoubleClick {
-                    button: MouseButton::Right,
-                    ..
-                }
-                | TrayIconEvent::Leave { .. } => self.disarm_volume(),
-                // Hover/move never arms: without a preceding left-click the
-                // wheel stays ignored. Other buttons have no gesture.
+                // EarTrumpet-style hover volume: no click required. A fresh
+                // hover resets acceleration so a stale burst cannot jump;
+                // Move must not reset or continuous rolling would never
+                // accelerate. Right-click hands the gesture to the context
+                // menu: a wheel roll over the open menu must scroll the
+                // menu, not the volume.
                 TrayIconEvent::Enter { .. }
-                | TrayIconEvent::Move { .. }
+                | TrayIconEvent::Click {
+                    button: MouseButton::Right,
+                    ..
+                }
+                | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Right,
+                    ..
+                }
+                | TrayIconEvent::Leave { .. } => self.reset_wheel(),
+                // Left-click is a no-op for volume (hover alone governs);
+                // other buttons and Move have no gesture.
+                TrayIconEvent::Move { .. }
                 | TrayIconEvent::Click { .. }
                 | TrayIconEvent::DoubleClick { .. } => {}
                 // Required: `TrayIconEvent` is `#[non_exhaustive]`, so future
@@ -472,40 +585,18 @@ impl<B: AudioBackend> App<B> {
             return;
         }
         let now = Instant::now();
-        // Gate 1: a left-click must have armed control within the window.
-        // Hovering or scrolling past without clicking stays ignored.
-        if !is_armed(self.volume_armed_until, now) {
-            self.volume_armed_until = None;
-            return;
-        }
         #[cfg(windows)]
         {
-            // Gate 2: the cursor must still be over the icon at event time,
-            // so a click followed by scrolling elsewhere cannot change
-            // the volume. Fail closed when the rect is unavailable.
+            // EarTrumpet-style hover gate: the cursor must be over the icon
+            // at event time. Fail closed when the rect is unavailable, so
+            // scrolling elsewhere never changes the volume.
             if !hook::cursor_over_tray(&self.tray).unwrap_or(false) {
                 return;
             }
         }
-        // Sliding window: rolling keeps control; idling past the window
-        // needs a fresh left-click.
-        self.volume_armed_until = Some(now + VOLUME_ARM_DURATION);
         let step = self.wheel.push(now, delta);
         let total = WheelState::total_step(delta, step);
-        match self.backend.get_volume() {
-            Ok(vol) => {
-                // vol is 0..=100; widen infallibly, clamp then convert.
-                let new_vol =
-                    u32::try_from((i32::try_from(vol).unwrap_or(0) + total).clamp(0, 100))
-                        .unwrap_or(0);
-                let clamped = crate::config::clamp_volume(new_vol, &self.cfg);
-                if let Err(e) = self.backend.set_volume(clamped) {
-                    tracing::warn!(error = %e, "set_volume failed");
-                }
-                self.update_tooltip_and_icon();
-            }
-            Err(e) => tracing::warn!(error = %e, "get_volume failed"),
-        }
+        self.nudge_volume(total);
     }
     fn poll_devices(&mut self) {
         if !self.backend.poll_device_changed() {
@@ -528,6 +619,12 @@ impl<B: AudioBackend> App<B> {
             self.update_tooltip_and_icon();
         }
     }
+    /// Drain global hotkeys pressed since the last frame.
+    fn poll_hotkeys(&mut self) {
+        while let Some(action) = hotkey::take_pending() {
+            self.handle_hotkey(action);
+        }
+    }
 
     /// Run the message loop until `Exit` is requested.
     pub fn run(mut self) {
@@ -542,11 +639,14 @@ impl<B: AudioBackend> App<B> {
             if self.should_exit {
                 break;
             }
+            self.poll_hotkeys();
             self.poll_wheel();
             self.poll_devices();
             self.poll_volume_state();
             pump::wait_for_input(hook::peek_pending());
         }
+        // Registration is thread-affine: release the combos on this thread.
+        hotkey::unregister_all();
     }
 }
 
@@ -555,28 +655,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wheel_requires_left_click_arm() {
-        let now = Instant::now();
-        // Hover alone never arms: disarmed stays disarmed.
-        assert!(!is_armed(None, now));
-        // A fresh click arms.
-        let armed = Some(now + VOLUME_ARM_DURATION);
-        assert!(is_armed(armed, now));
-        // A stale click expires: scrolling minutes later stays ignored.
-        assert!(!is_armed(armed, now + VOLUME_ARM_DURATION));
-        assert!(!is_armed(
-            armed,
-            now + VOLUME_ARM_DURATION + Duration::from_millis(1)
-        ));
+    fn hover_leave_resets_wheel_acceleration() {
+        // EarTrumpet-style hover: Leave clears the burst history so a stale
+        // burst cannot jump the volume on the next hover.
+        let mut wheel = WheelState::new();
+        let base = Instant::now();
+        assert_eq!(wheel.push(base, 120), 1);
+        assert_eq!(wheel.push(base + Duration::from_millis(50), 120), 5);
+        wheel.clear();
+        let later = base + Duration::from_millis(300);
+        assert_eq!(wheel.push(later, 120), 1);
     }
 
     #[test]
-    fn arm_window_is_short_and_sliding() {
-        // Short enough that a forgotten click cannot surprise later, long
-        // enough to roll a full gesture; each tick re-arms from `now`.
-        assert!(VOLUME_ARM_DURATION <= Duration::from_secs(5));
-        let now = Instant::now();
-        let extended = Some(now + VOLUME_ARM_DURATION);
-        assert!(is_armed(extended, now));
+    fn cycle_index_wraps_both_ways() {
+        assert_eq!(cycle_index(3, Some(0), 1), Some(1));
+        // Forward past the end wraps to the first device, backward to the last.
+        assert_eq!(cycle_index(3, Some(2), 1), Some(0));
+        assert_eq!(cycle_index(3, Some(0), -1), Some(2));
+        // Unknown/absent current starts at the first device.
+        assert_eq!(cycle_index(3, None, 1), Some(1));
+        assert_eq!(cycle_index(3, Some(9), -1), Some(2));
+        // Single device and empty list.
+        assert_eq!(cycle_index(1, Some(0), 1), Some(0));
+        assert_eq!(cycle_index(0, None, 1), None);
+    }
+
+    #[test]
+    fn stepped_volume_stays_in_range() {
+        assert_eq!(stepped_volume(50, 2), 52);
+        assert_eq!(stepped_volume(50, -2), 48);
+        assert_eq!(stepped_volume(0, -2), 0);
+        assert_eq!(stepped_volume(1, -5), 0);
+        assert_eq!(stepped_volume(99, 5), 100);
+        // Overflow-safe at both extremes.
+        assert_eq!(stepped_volume(100, i32::MAX), 100);
+        assert_eq!(stepped_volume(0, i32::MIN), 0);
     }
 }

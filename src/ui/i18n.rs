@@ -125,6 +125,55 @@ pub fn tr(key: &str, lang: Lang) -> String {
                 "Auto Launch (status unknown)".into()
             }
         }
+        "hotkeys" => {
+            if zh {
+                "全局快捷键".into()
+            } else {
+                "Hotkeys".into()
+            }
+        }
+        "hk_mute" => {
+            if zh {
+                "静音切换".into()
+            } else {
+                "Toggle Mute".into()
+            }
+        }
+        "hk_volume_up" => {
+            if zh {
+                "音量加".into()
+            } else {
+                "Volume Up".into()
+            }
+        }
+        "hk_volume_down" => {
+            if zh {
+                "音量减".into()
+            } else {
+                "Volume Down".into()
+            }
+        }
+        "hk_next_device" => {
+            if zh {
+                "下一个输出设备".into()
+            } else {
+                "Next Output Device".into()
+            }
+        }
+        "hk_prev_device" => {
+            if zh {
+                "上一个输出设备".into()
+            } else {
+                "Previous Output Device".into()
+            }
+        }
+        "no_devices" => {
+            if zh {
+                "未检测到音频设备".into()
+            } else {
+                "No audio devices".into()
+            }
+        }
         "device_error" => {
             if zh {
                 "切换设备失败".into()
@@ -172,5 +221,26 @@ mod tests {
         assert_eq!(tr("output_devices", Lang::En), "Output Devices");
         assert_eq!(tr("input_devices", Lang::Zh), "音频输入设备");
         assert_eq!(tr("input_devices", Lang::En), "Input Devices");
+    }
+
+    #[test]
+    fn every_hotkey_action_has_both_labels() {
+        // A missing key would render the raw id in the menu (tr passes
+        // unknown keys through verbatim), so cover the whole action set.
+        for action in crate::platform::hotkey::HotkeyAction::ALL {
+            for lang in [Lang::Zh, Lang::En] {
+                let label = tr(action.i18n_key(), lang);
+                assert_ne!(
+                    label,
+                    action.i18n_key(),
+                    "{} has no {lang} label",
+                    action.config_key()
+                );
+            }
+        }
+        assert_ne!(tr("hotkeys", Lang::Zh), "hotkeys");
+        assert_ne!(tr("hotkeys", Lang::En), "hotkeys");
+        assert_ne!(tr("no_devices", Lang::Zh), "no_devices");
+        assert_ne!(tr("no_devices", Lang::En), "no_devices");
     }
 }

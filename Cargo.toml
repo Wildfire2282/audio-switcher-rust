@@ -1,6 +1,6 @@
 [package]
 name = "audio-switcher"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Audio Switcher tray tool"
@@ -45,6 +45,7 @@ features = [
   "Win32_Graphics_Gdi", # MonitorFromWindow for dialog centering (dialog)
   "Win32_System_SystemInformation", # GetTickCount64 monotonic clock (real)
   "Win32_Globalization", # GetUserDefaultLocaleName for Lang::System (locale)
+  "Win32_UI_Input_KeyboardAndMouse", # RegisterHotKey/UnregisterHotKey for global hotkeys (hotkey)
 ]
 
 [dev-dependencies]

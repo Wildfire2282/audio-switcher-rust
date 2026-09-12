@@ -1,0 +1,10 @@
+# Single-file delivery: link the MSVC CRT statically so the shipped exe needs
+# no VC++ Redistributable (a clean Windows install has no `vcruntime140.dll`),
+# and so the artifact is one file with nothing beside it. Cost is code size
+# only — the size budget stays inside the 800KB single-exe limit (§1.1/§6 of
+# the scheme); re-measure with `scripts/package.ps1` after dependency bumps.
+#
+# Applied per target triple (cargo has no per-profile rustflags): dev builds
+# link the same way as release, so tests exercise the shipped link mode.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
