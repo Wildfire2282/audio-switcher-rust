@@ -22,8 +22,6 @@ The tooltip shows the device and state on one line (`Speaker - 62%`, or `Speaker
 
 ---
 
-# AudioSwitcher（中文）
-
 Windows 托盘工具：切换默认音频设备、静音开关、主音量上限。
 
 ## 使用
