@@ -34,6 +34,6 @@ Desktop.ini
 !.env.example
 
 # Local reference checklists (not part of repo)
-# references/ + AGENTS.md 仅本地清单；docs/ 下 release-notes 必须入库，禁忽略
+# references/ + AGENTS.md 仅本地清单
 references/
 AGENTS.md
