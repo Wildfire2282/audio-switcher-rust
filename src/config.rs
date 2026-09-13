@@ -287,6 +287,87 @@ impl Default for AppConfig {
     }
 }
 
+/// Bilingual header written above the JSON body on every save.
+///
+/// `config.json` is JSONC: `//` line comments and `/* */` blocks are stripped
+/// on load, so users can keep notes. All hotkeys are unbound by default;
+/// editing is manual only (no menu toggles).
+pub const CONFIG_COMMENT_HEADER: &str = "// AudioSwitcher config — edit, save, then restart the app to apply.\n\
+    // 配置文件 — 改完保存后重启生效。\n\
+    // Location / 位置: %APPDATA%\\audio-switcher\\config.json\n\
+    // Language / 语言: \"system\" (follow OS / 跟随系统), \"zh\", \"en\".\n\
+    // Volume limit / 音量上限: \"volume_limit_enabled\" true/false, \"volume_limit\" 1-100.\n\
+    // Autostart / 开机自启: \"autostart\" true/false.\n\
+    //\n\
+    // Hotkeys / 快捷键 (all unbound by default / 默认无绑定):\n\
+    //   Each action takes a combination string; null disables it.\n\
+    //   每个动作填组合字符串，null 表示关闭。\n\
+    //   Format / 格式: modifiers + key, e.g. \"Ctrl+Alt+M\".\n\
+    //   Modifiers / 修饰键 (at least one / 至少一个): Ctrl, Alt, Shift, Win (case-insensitive, any order / 不区分大小写，顺序不限).\n\
+    //   Key / 按键: A-Z, 0-9, F1-F24, Up/Down/Left/Right, Space, Enter, etc.\n\
+    //   Actions / 动作:\n\
+    //     \"mute\"         Toggle mute / 静音切换\n\
+    //     \"volume_up\"    Volume up 2% per press / 音量加（每次 2%）\n\
+    //     \"volume_down\"  Volume down 2% per press / 音量减（每次 2%）\n\
+    //     \"next_device\"  Next output device / 下一个输出设备\n\
+    //     \"prev_device\"  Previous output device / 上一个输出设备\n\
+    //   Example / 示例:\n\
+    //     \"hotkeys\": { \"mute\": \"Ctrl+Alt+M\", \"volume_up\": \"Ctrl+Alt+Up\", \"volume_down\": \"Ctrl+Alt+Down\", \"next_device\": null, \"prev_device\": null }\n\
+    //   A combination owned by another program is disabled with a dialog; the rest keep working.\n\
+    //   被其他程序占用的组合会弹窗并自动禁用，其余照常工作。\n";
+
+/// Strip `//` line comments and `/* */` blocks outside strings (JSONC).
+///
+/// `//` inside a string (e.g. a value) is preserved. Invalid UTF-8 is
+/// returned unchanged so the caller still fails loudly with backup+reset.
+fn strip_json_comments(bytes: &[u8]) -> Vec<u8> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return bytes.to_vec();
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+        } else if c == '/' && chars.peek() == Some(&'/') {
+            for c2 in chars.by_ref() {
+                if c2 == '\n' {
+                    out.push('\n');
+                    break;
+                }
+            }
+        } else if c == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            let mut prev_star = false;
+            for c2 in chars.by_ref() {
+                if c2 == '\n' {
+                    out.push('\n');
+                } else if prev_star && c2 == '/' {
+                    break;
+                }
+                prev_star = c2 == '*';
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out.into_bytes()
+}
+
 /// Resolve `(path, degraded)` from explicit roots. Pure for tests; the live
 /// [`resolve_config_path`] reads the environment.
 fn resolve_for(appdata: Option<&str>, localappdata: Option<&str>, tmp: &Path) -> (PathBuf, bool) {
@@ -334,7 +415,7 @@ fn import_legacy_file(new_path: &Path, legacy_path: &Path) -> bool {
     let Ok(bytes) = std::fs::read(legacy_path) else {
         return false;
     };
-    let cfg = serde_json::from_slice::<AppConfig>(&bytes)
+    let cfg = serde_json::from_slice::<AppConfig>(&strip_json_comments(&bytes))
         .map(AppConfig::migrate)
         .unwrap_or_default();
     cfg.save_to(new_path).is_ok()
@@ -345,6 +426,16 @@ impl AppConfig {
     #[must_use]
     pub fn config_path() -> PathBuf {
         CONFIG_PATH_CACHE.0.clone()
+    }
+
+    /// Returns the cached config folder (parent of [`Self::config_path`]).
+    /// Created on demand by [`Self::save_to`] and the open-folder menu action.
+    #[must_use]
+    pub fn config_dir() -> PathBuf {
+        Self::config_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| std::env::temp_dir().join(crate::TOOL_ID))
     }
 
     /// Whether the resolved path is the degraded temp fallback (saves warn).
@@ -403,9 +494,11 @@ impl AppConfig {
 
     /// Parse `bytes` read from `path`, migrating and validating. Unknown
     /// fields or corrupt JSON back the file up and reset to defaults (loud,
-    /// never silent).
+    /// never silent). Leading `//` / `/* */` comments are stripped first
+    /// (see [`CONFIG_COMMENT_HEADER`]).
     fn load_from_bytes(bytes: &[u8], path: &Path) -> Self {
-        match serde_json::from_slice::<Self>(bytes) {
+        let stripped = strip_json_comments(bytes);
+        match serde_json::from_slice::<Self>(&stripped) {
             Ok(cfg) => Self::migrate(cfg),
             Err(e) => {
                 tracing::warn!("config parse failed ({e}); backing up and resetting");
@@ -468,6 +561,8 @@ impl AppConfig {
     /// Synchronous atomic save: write to a unique temporary file alongside the
     /// target then rename. The unique suffix avoids races between concurrent
     /// `save()` callers. Warns when writing to the degraded temp fallback.
+    /// The file is JSONC: [`CONFIG_COMMENT_HEADER`] is written above the JSON
+    /// body so users learn the manual hotkey format in place.
     ///
     /// # Errors
     ///
@@ -480,6 +575,7 @@ impl AppConfig {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self).expect("AppConfig serialization never fails");
+        let body = format!("{CONFIG_COMMENT_HEADER}\n{json}\n");
         let tmp_path = {
             static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let file_name = path
@@ -494,7 +590,7 @@ impl AppConfig {
             let pid = std::process::id();
             path.with_file_name(format!("{file_name}.tmp.{pid}-{nanos}-{suffix}"))
         };
-        std::fs::write(&tmp_path, json.as_bytes())?;
+        std::fs::write(&tmp_path, body.as_bytes())?;
         // On Windows rename uses MoveFileExW(REPLACE_EXISTING) and atomically replaces.
         if let Err(e) = std::fs::rename(&tmp_path, path) {
             let _ = std::fs::remove_file(&tmp_path);
@@ -836,18 +932,53 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_toggle_default_combo_round_trips_through_config() {
-        // The menu binds `default_combo()`; storing it must survive a reload
-        // byte-identically (otherwise the menu would show a different combo).
+    fn example_combos_round_trip_through_config() {
+        // Manual-only hotkeys: storing canonical combos must survive a reload
+        // byte-identically (header comments are stripped on load).
         let mut cfg = AppConfig::default();
-        for action in HotkeyAction::ALL {
-            let combo = action.default_combo().parse::<Hotkey>().unwrap();
-            cfg.hotkeys.set(action, Some(combo.to_string()));
+        let combos = [
+            (HotkeyAction::Mute, "Ctrl+Alt+M"),
+            (HotkeyAction::VolumeUp, "Ctrl+Alt+Up"),
+            (HotkeyAction::VolumeDown, "Ctrl+Alt+Down"),
+            (HotkeyAction::NextDevice, "Ctrl+Alt+Right"),
+            (HotkeyAction::PrevDevice, "Ctrl+Alt+Left"),
+        ];
+        for (action, combo) in combos {
+            let parsed = combo.parse::<Hotkey>().unwrap();
+            cfg.hotkeys.set(action, Some(parsed.to_string()));
         }
         let dir = tempdir().unwrap();
         let path = AppConfig::config_path_for(dir.path());
         cfg.save_to(&path).unwrap();
         let loaded = AppConfig::load_from(&path);
         assert_eq!(loaded.hotkeys, cfg.hotkeys);
+    }
+
+    #[test]
+    fn saved_file_carries_bilingual_hotkey_guidance() {
+        let dir = tempdir().unwrap();
+        let path = AppConfig::config_path_for(dir.path());
+        AppConfig::default().save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("//"), "config must open with comment header");
+        assert!(text.contains("Hotkeys / 快捷键"), "{text}");
+        assert!(text.contains("默认无绑定"), "{text}");
+        assert!(text.contains("\"hotkeys\""), "{text}");
+        // Header + JSON still loads (comments stripped).
+        let loaded = AppConfig::load_from(&path);
+        assert_eq!(loaded, AppConfig::default());
+    }
+
+    #[test]
+    fn line_and_block_comments_are_stripped_outside_strings() {
+        let (cfg, _dir) = load_raw(
+            "// leading note\n{\"version\":3,\"lang\":\"en\",/* block \n note */\"volume_limit_enabled\":true,\"volume_limit\":25,\"autostart\":true,\n\"hotkeys\":{\"mute\":\"Ctrl+Alt+M\" // trailing note\n}}",
+        );
+        assert_eq!(cfg.hotkeys.get(HotkeyAction::Mute), Some("Ctrl+Alt+M"));
+        // `//` inside a string value is preserved, not treated as a comment.
+        let raw = r#"{"version":3,"lang":"en","volume_limit_enabled":true,"volume_limit":25,"autostart":true,
+            "hotkeys":{"mute":"Ctrl+Alt+M"}} // ok"#;
+        let (cfg2, _d2) = load_raw(raw);
+        assert_eq!(cfg2.hotkeys.get(HotkeyAction::Mute), Some("Ctrl+Alt+M"));
     }
 }

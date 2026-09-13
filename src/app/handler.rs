@@ -1,7 +1,5 @@
 //! Menu action dispatch — maps `muda` IDs to typed actions.
 
-use crate::platform::hotkey::HotkeyAction;
-
 /// Typed menu action parsed from a `MenuEvent` ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
@@ -21,10 +19,10 @@ pub enum MenuAction {
     OpenMixer,
     /// Open sound settings.
     OpenSound,
+    /// Open the config folder for manual hotkey editing.
+    OpenHotkeySettings,
     /// Toggle autostart.
     Autostart,
-    /// Bind/unbind the default combination for `action`.
-    HotkeyToggle(HotkeyAction),
     /// Follow the system language.
     LangSystem,
     /// Switch language to Chinese.
@@ -63,15 +61,13 @@ impl MenuAction {
         if let Some(preset) = menu_id::parse_vol_preset(id) {
             return Self::VolLimit(preset);
         }
-        if let Some(action) = menu_id::parse_hotkey(id) {
-            return Self::HotkeyToggle(action);
-        }
         match id {
             menu_id::REFRESH => Self::Refresh,
             menu_id::MUTE => Self::Mute,
             menu_id::VOL_ENABLED => Self::VolEnabled,
             menu_id::OPEN_MIXER => Self::OpenMixer,
             menu_id::OPEN_SOUND => Self::OpenSound,
+            menu_id::OPEN_HOTKEY_SETTINGS => Self::OpenHotkeySettings,
             menu_id::AUTOSTART => Self::Autostart,
             menu_id::LANG_SYSTEM => Self::LangSystem,
             menu_id::LANG_ZH => Self::LangZh,
@@ -106,13 +102,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_hotkey_toggles() {
-        for action in HotkeyAction::ALL {
-            let id = crate::ui::menu::id::hotkey(action);
-            assert_eq!(MenuAction::from_id(&id), MenuAction::HotkeyToggle(action));
-        }
-        // The submenu id and unknown suffixes stay Unknown.
-        for id in ["hotkeys", "hotkey_", "hotkey_bogus", "hotkey_volume"] {
+    fn parse_hotkey_settings() {
+        assert_eq!(
+            MenuAction::from_id("open_hotkey_settings"),
+            MenuAction::OpenHotkeySettings
+        );
+        // Retired submenu ids stay Unknown and never dispatch.
+        for id in ["hotkeys", "hotkey_", "hotkey_bogus", "hotkey_mute"] {
             assert!(
                 matches!(MenuAction::from_id(id), MenuAction::Unknown(_)),
                 "{id}"

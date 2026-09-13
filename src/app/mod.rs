@@ -359,6 +359,17 @@ impl<B: AudioBackend> App<B> {
             MenuAction::OpenSound => {
                 crate::platform::shell::open_sound_settings(&tr("sound_error", self.lang()));
             }
+            MenuAction::OpenHotkeySettings => {
+                // Manual-only hotkeys: ensure the commented config exists, then
+                // open its folder so the user can edit `hotkeys` and restart.
+                if let Err(e) = self.cfg.save_to(&AppConfig::config_path()) {
+                    tracing::warn!("config save failed before opening folder: {e}");
+                }
+                crate::platform::shell::open_folder(
+                    &AppConfig::config_dir(),
+                    &tr("config_error", self.lang()),
+                );
+            }
             MenuAction::Autostart => {
                 let new_val = !self.cfg.autostart;
                 match crate::platform::set_autostart(new_val) {
@@ -371,19 +382,6 @@ impl<B: AudioBackend> App<B> {
                         crate::platform::dialog::show_autostart_error(&e);
                     }
                 }
-            }
-            MenuAction::HotkeyToggle(action) => {
-                // Menu toggle binds the action's default combo or clears it;
-                // custom combos are edited in config.json.
-                self.cfg.hotkeys.set(
-                    action,
-                    match self.cfg.hotkeys.get(action) {
-                        Some(_) => None,
-                        None => Some(action.default_combo().to_string()),
-                    },
-                );
-                apply_hotkeys(&mut self.cfg);
-                self.save_and_refresh(false);
             }
             MenuAction::LangSystem => {
                 self.cfg.lang = Lang::System;

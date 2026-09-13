@@ -3,9 +3,9 @@
 //! The parsing/describing half is platform-independent and unit-tested; only
 //! registration touches Win32. Module contract: `pump` routes `WM_HOTKEY`
 //! into [`note_pending`] (foundational edge, noted here), `app` owns policy
-//! (which combos are bound, when to re-register), and `ui` renders the
-//! toggles. `config` stores combos as canonical strings, so users can edit
-//! `config.json` directly.
+//! (which combos are bound, when to re-register). `config` stores combos as
+//! canonical strings, so users edit `config.json` manually (all unbound by
+//! default; no menu toggles).
 //!
 //! Registration is thread-affine: `RegisterHotKey(None, ...)` binds the combo
 //! to the calling thread, and `WM_HOTKEY` is posted to that thread's queue.
@@ -92,22 +92,7 @@ impl HotkeyAction {
         }
     }
 
-    /// Combination bound when the action is switched on from the menu. Chosen
-    /// in the `Ctrl+Alt` range to stay out of the way of OS-reserved combos;
-    /// an occupied combo is reported and auto-disabled at registration
-    /// (recorded in the tool SPEC).
-    #[must_use]
-    pub const fn default_combo(self) -> &'static str {
-        match self {
-            Self::Mute => "Ctrl+Alt+M",
-            Self::VolumeUp => "Ctrl+Alt+Up",
-            Self::VolumeDown => "Ctrl+Alt+Down",
-            Self::NextDevice => "Ctrl+Alt+Right",
-            Self::PrevDevice => "Ctrl+Alt+Left",
-        }
-    }
-
-    /// `AppConfig::hotkeys` field name; also the `hotkey_*` menu id suffix.
+    /// `AppConfig::hotkeys` field name.
     #[must_use]
     pub const fn config_key(self) -> &'static str {
         match self {
@@ -119,19 +104,7 @@ impl HotkeyAction {
         }
     }
 
-    /// Key into [`crate::ui::i18n`] for the action label.
-    #[must_use]
-    pub const fn i18n_key(self) -> &'static str {
-        match self {
-            Self::Mute => "hk_mute",
-            Self::VolumeUp => "hk_volume_up",
-            Self::VolumeDown => "hk_volume_down",
-            Self::NextDevice => "hk_next_device",
-            Self::PrevDevice => "hk_prev_device",
-        }
-    }
-
-    /// English action name for logs and dialogs (menus use [`Self::i18n_key`]).
+    /// English action name for logs and dialogs.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -464,9 +437,15 @@ mod tests {
 
     #[test]
     fn parse_canonical_and_round_trip() {
-        for action in HotkeyAction::ALL {
-            let hotkey: Hotkey = action.default_combo().parse().expect("default parses");
-            assert_eq!(hotkey.to_string(), action.default_combo());
+        for combo in [
+            "Ctrl+Alt+M",
+            "Ctrl+Alt+Up",
+            "Ctrl+Alt+Down",
+            "Ctrl+Alt+Right",
+            "Ctrl+Alt+Left",
+        ] {
+            let hotkey: Hotkey = combo.parse().expect("example parses");
+            assert_eq!(hotkey.to_string(), combo);
             assert_ne!(hotkey.modifiers(), 0);
         }
     }
@@ -542,7 +521,7 @@ mod tests {
         }
         assert_eq!(HotkeyAction::from_id(0), None);
         assert_eq!(HotkeyAction::from_id(6), None);
-        // Config keys double as menu-id suffixes: they must stay unique.
+        // Config keys must stay unique (they are the `hotkeys` field names).
         let mut keys: Vec<&str> = HotkeyAction::ALL.iter().map(|a| a.config_key()).collect();
         keys.sort_unstable();
         let count = keys.len();

@@ -197,6 +197,38 @@ pub(crate) fn open_sound_settings(err_msg: &str) {
     }
 }
 
+/// Open a folder in Explorer. `err_msg` is shown when launching fails.
+///
+/// The folder is created first so opening the config folder never fails on a
+/// fresh install. Contract: callers pass the folder; shell owns no config state.
+pub(crate) fn open_folder(dir: &std::path::Path, err_msg: &str) {
+    #[cfg(windows)]
+    {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            tracing::warn!("open_folder create_dir_all failed: {e}");
+            crate::platform::dialog::show_msgbox(err_msg);
+            return;
+        }
+        match wide_nul(&dir.to_string_lossy()) {
+            Ok(target) => {
+                if let Err(e) = shell_execute(&target, None) {
+                    tracing::warn!("open_folder failed: {e}");
+                    crate::platform::dialog::show_msgbox(err_msg);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("open_folder validation failed: {e}");
+                crate::platform::dialog::show_msgbox(err_msg);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dir;
+        let _ = err_msg;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

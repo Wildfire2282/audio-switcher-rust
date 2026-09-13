@@ -1,16 +1,16 @@
 //! Tray context menu builder.
 //!
-//! Fixed shape (§5.1): grayed `{DisplayName} v{ver}` title → separator →
-//! feature group (devices, toggles, system tools) → separator → fixed tail
-//! (refresh → autostart → language submenu → about → exit always last,
-//! no separators inside the tail).
+//! Fixed shape (§5.1): grayed `{DisplayName} v{ver}` title → separator → feature
+//! group (devices, toggles, system tools incl. hotkey-settings entry) →
+//! separator → fixed tail (refresh → autostart → language submenu → about →
+//! exit always last, no separators inside the tail). Hotkeys have no submenu:
+//! they are unbound by default and edited manually in `config.json` (JSONC).
 
 use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::audio::AudioDevice;
-use crate::config::{AppConfig, Hotkeys, Lang};
+use crate::config::{AppConfig, Lang};
 use crate::platform::AutostartState;
-use crate::platform::hotkey::HotkeyAction;
 use crate::ui::i18n::tr;
 use crate::ui::text::{MAX_LABEL_CHARS, truncate_label};
 
@@ -23,9 +23,8 @@ pub const VOLUME_PRESETS: &[u32] = &[25, 50, 75];
 
 /// Menu item IDs shared with [`crate::app::handler::MenuAction::from_id`].
 /// 1.0 contract: never rename, never reuse deleted ids; adding is minor.
+/// (`hotkeys` / `hotkey_*` are retired and must not be reused.)
 pub mod id {
-    use crate::platform::hotkey::HotkeyAction;
-
     /// Grayed title (non-clickable, never parsed as an action).
     pub const TITLE: &str = "title";
     /// Manual device-list refresh (sleep-resume/callback-loss fallback).
@@ -38,10 +37,10 @@ pub mod id {
     pub const OPEN_MIXER: &str = "open_mixer";
     /// Open sound settings.
     pub const OPEN_SOUND: &str = "open_sound";
+    /// Open the config folder for manual hotkey editing.
+    pub const OPEN_HOTKEY_SETTINGS: &str = "open_hotkey_settings";
     /// Toggle autostart.
     pub const AUTOSTART: &str = "autostart";
-    /// Hotkeys submenu (one `hotkey_*` child per action).
-    pub const HOTKEYS: &str = "hotkeys";
     /// Language submenu (frozen tail id, same contract as the lang_* items).
     pub const LANGUAGE: &str = "language";
     /// Follow the system language.
@@ -56,22 +55,6 @@ pub mod id {
     pub const EXIT: &str = "exit";
     /// Grayed placeholder shown when no endpoint was enumerated at all.
     pub const NO_DEVICES: &str = "no_devices";
-
-    /// Build the menu ID for a hotkey toggle, e.g. `hotkey_mute`.
-    #[must_use]
-    pub fn hotkey(action: HotkeyAction) -> String {
-        format!("hotkey_{}", action.config_key())
-    }
-
-    /// Parse a `hotkey_*` ID back into its action, or `None`.
-    #[must_use]
-    pub fn parse_hotkey(id: &str) -> Option<HotkeyAction> {
-        let key = id.strip_prefix("hotkey_")?;
-        HotkeyAction::ALL
-            .iter()
-            .copied()
-            .find(|action| action.config_key() == key)
-    }
 
     /// Build the menu ID for a volume-limit preset, e.g. `vol_25`.
     #[must_use]
@@ -124,8 +107,6 @@ pub struct MenuHandles {
     vol_enabled: CheckMenuItem,
     /// Volume-limit presets `(percent, item)`.
     vol_items: Vec<(u32, CheckMenuItem)>,
-    /// Hotkey bindings the labels were built from (change → rebuild).
-    hotkeys: Hotkeys,
     /// Autostart toggle (grayed when the state is `Unknown`).
     autostart: CheckMenuItem,
     /// Language mode switches (three-way group, exactly one checked).
@@ -208,11 +189,6 @@ impl MenuHandles {
         if self.lang_mode != cfg.lang || self.lang_ui != ui_lang {
             return false;
         }
-        // Hotkey labels embed the combination; muda has no cheap partial
-        // relabel, so a binding change rebuilds instead of flipping a check.
-        if self.hotkeys != cfg.hotkeys {
-            return false;
-        }
         if !sync_entries(&self.device_items, devices, default_id) {
             return false;
         }
@@ -231,15 +207,6 @@ impl MenuHandles {
         self.lang_en.set_checked(cfg.lang == Lang::En);
         true
     }
-}
-
-/// Menu label for a hotkey toggle.
-///
-/// Shows the bound combination, or the action's default one while it is off —
-/// the item then doubles as "switch this on and you get `Ctrl+Alt+M`".
-fn hotkey_label(action: HotkeyAction, cfg: &AppConfig, ui_lang: Lang) -> String {
-    let combo = cfg.hotkeys.get(action).unwrap_or(action.default_combo());
-    format!("{} ({combo})", tr(action.i18n_key(), ui_lang))
 }
 
 /// Build `(key, name, item)` entries for `devices` with `prefix`.
@@ -349,31 +316,14 @@ pub fn build_menu(state: &MenuState<'_>) -> MenuHandles {
         Submenu::with_id_and_items("volume_limit", tr("volume_limit", ui_lang), true, &vol_refs)
             .expect("volume_limit submenu");
 
-    // One toggle per bindable action; the label carries the combination, the
-    // check carries whether it is bound (`HotkeyAction::default_combo` is what
-    // switching it on binds).
-    let hotkey_items: Vec<CheckMenuItem> = HotkeyAction::ALL
-        .iter()
-        .map(|action| {
-            CheckMenuItem::with_id(
-                id::hotkey(*action),
-                hotkey_label(*action, cfg, ui_lang),
-                true,
-                cfg.hotkeys.get(*action).is_some(),
-                None,
-            )
-        })
-        .collect();
-    let hotkey_refs: Vec<&dyn muda::IsMenuItem> = hotkey_items
-        .iter()
-        .map(|item| item as &dyn muda::IsMenuItem)
-        .collect();
-    let hotkey_sub =
-        Submenu::with_id_and_items(id::HOTKEYS, tr("hotkeys", ui_lang), true, &hotkey_refs)
-            .expect("hotkeys submenu");
-
     let open_mixer = MenuItem::with_id(id::OPEN_MIXER, tr("open_mixer", ui_lang), true, None);
     let open_sound = MenuItem::with_id(id::OPEN_SOUND, tr("open_sound", ui_lang), true, None);
+    let open_hotkey_settings = MenuItem::with_id(
+        id::OPEN_HOTKEY_SETTINGS,
+        tr("open_hotkey_settings", ui_lang),
+        true,
+        None,
+    );
     let (autostart_label, autostart_enabled, autostart_checked) = match autostart {
         AutostartState::Enabled => (tr("autostart", ui_lang), true, true),
         AutostartState::Disabled => (tr("autostart", ui_lang), true, false),
@@ -446,10 +396,10 @@ pub fn build_menu(state: &MenuState<'_>) -> MenuHandles {
     }
     let _ = menu.append(&mute);
     let _ = menu.append(&vol_sub);
-    let _ = menu.append(&hotkey_sub);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&open_mixer);
     let _ = menu.append(&open_sound);
+    let _ = menu.append(&open_hotkey_settings);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&refresh);
     let _ = menu.append(&autostart_item);
@@ -471,7 +421,6 @@ pub fn build_menu(state: &MenuState<'_>) -> MenuHandles {
             .zip(vol_items)
             .map(|(p, i)| (*p, i))
             .collect(),
-        hotkeys: cfg.hotkeys.clone(),
         autostart: autostart_item,
         lang_system,
         lang_zh,
@@ -732,20 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn hotkey_id_round_trip() {
-        for action in HotkeyAction::ALL {
-            let menu_id = id::hotkey(action);
-            assert_eq!(id::parse_hotkey(&menu_id), Some(action));
-            // Distinct from the submenu id: the submenu never parses as an action.
-            assert_ne!(menu_id, id::HOTKEYS);
-        }
-        assert_eq!(id::parse_hotkey(id::HOTKEYS), None);
-        assert_eq!(id::parse_hotkey("hotkey_"), None);
-        assert_eq!(id::parse_hotkey("hotkey_nope"), None);
-    }
-
-    #[test]
-    fn hotkey_items_show_combo_and_binding_state() {
+    fn hotkey_settings_entry_follows_sound_settings() {
         let cfg = test_cfg();
         let base = MenuState {
             cfg: &cfg,
@@ -757,58 +693,32 @@ mod tests {
             autostart: &AutostartState::Disabled,
             ui_lang: Lang::En,
         };
-        // The submenu carries one toggle per action, in `HotkeyAction::ALL` order.
-        let children = |handles: &MenuHandles| -> Vec<(String, bool)> {
-            let submenu = handles
-                .menu
-                .items()
-                .into_iter()
-                .find_map(|kind| match kind {
-                    muda::MenuItemKind::Submenu(sub) if sub.id().0 == id::HOTKEYS => Some(sub),
-                    _ => None,
-                })
-                .expect("hotkeys submenu");
-            let out: Vec<(String, bool)> = submenu
-                .items()
-                .into_iter()
-                .filter_map(|kind| match kind {
-                    muda::MenuItemKind::Check(item) => {
-                        Some((item.text().clone(), item.is_checked()))
-                    }
-                    _ => None,
-                })
-                .collect();
-            out
-        };
-
-        let opted_out = children(&build_menu(&base));
-        assert_eq!(opted_out.len(), HotkeyAction::ALL.len());
-        for (action, (label, checked)) in HotkeyAction::ALL.iter().zip(&opted_out) {
-            assert!(!checked, "hotkeys are opt-in");
-            // An off action still advertises the combo that switching it on binds.
-            assert!(label.contains(action.default_combo()), "{label}");
+        for ui_lang in [Lang::En, Lang::Zh] {
+            let handles = build_menu(&MenuState { ui_lang, ..base });
+            let ids = menu_ids(&handles.menu);
+            let mixer = ids
+                .iter()
+                .position(|id| id == id::OPEN_MIXER)
+                .expect("mixer entry");
+            let sound = ids
+                .iter()
+                .position(|id| id == id::OPEN_SOUND)
+                .expect("sound entry");
+            let hotkey = ids
+                .iter()
+                .position(|id| id == id::OPEN_HOTKEY_SETTINGS)
+                .expect("hotkey settings entry");
+            assert_eq!(mixer + 1, sound, "{ids:?}");
+            assert_eq!(sound + 1, hotkey, "{ids:?}");
+            // Retired submenu ids never appear.
+            assert!(!ids.iter().any(|id| id == "hotkeys"), "{ids:?}");
+            assert!(!ids.iter().any(|id| id.starts_with("hotkey_")), "{ids:?}");
         }
-
-        let bound = AppConfig {
-            hotkeys: Hotkeys {
-                mute: Some("Ctrl+Shift+F9".into()),
-                ..Hotkeys::default()
-            },
-            ..test_cfg()
-        };
-        let (label, checked) = children(&build_menu(&MenuState {
-            cfg: &bound,
-            ..base
-        }))
-        .into_iter()
-        .next()
-        .expect("mute item");
-        assert!(checked);
-        assert!(label.contains("Ctrl+Shift+F9"), "{label}");
     }
 
     #[test]
-    fn hotkey_binding_change_forces_rebuild() {
+    fn hotkey_config_change_keeps_menu_in_place() {
+        use crate::config::Hotkeys;
         let cfg = test_cfg();
         let ui = cfg.effective_lang();
         let base = MenuState {
@@ -823,7 +733,7 @@ mod tests {
         };
         let mut handles = build_menu(&base);
         assert!(handles.sync_state(&base));
-        // Labels embed the combination: binding one must relabel → rebuild.
+        // Hotkeys are manual-only now: editing them must not force a rebuild.
         let bound = AppConfig {
             hotkeys: Hotkeys {
                 volume_up: Some("Ctrl+Alt+Up".into()),
@@ -831,7 +741,7 @@ mod tests {
             },
             ..test_cfg()
         };
-        assert!(!handles.sync_state(&MenuState {
+        assert!(handles.sync_state(&MenuState {
             cfg: &bound,
             ..base
         }));

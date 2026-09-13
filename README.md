@@ -30,32 +30,32 @@ Windows 托盘工具：切换默认音频设备、静音开关、主音量上限
 
 #### Hotkeys
 
-The **Hotkeys** submenu binds one global shortcut per action (all off by default).
-Checked = bound to the combination shown in the label.
-A combination another program already owns is reported in a dialog and left disabled, so the remaining hotkeys keep working.
+All hotkeys are unbound by default. Click **Open Hotkey Settings** (below **Open Sound Settings**) to open the config folder, then edit `hotkeys` in `config.json` — the file header carries bilingual comments with format, actions, and an example. Save and restart to apply.
 
-| Action | Default combination | Step |
+| Action | Config key | Step |
 | --- | --- | --- |
-| Toggle mute | `Ctrl+Alt+M` | — |
-| Volume up | `Ctrl+Alt+Up` | `2%` per press |
-| Volume down | `Ctrl+Alt+Down` | `2%` per press |
-| Next output device | `Ctrl+Alt+Right` | — |
-| Previous output device | `Ctrl+Alt+Left` | — |
+| Toggle mute | `mute` | — |
+| Volume up | `volume_up` | `2%` per press |
+| Volume down | `volume_down` | `2%` per press |
+| Next output device | `next_device` | — |
+| Previous output device | `prev_device` | — |
 
-Custom combinations go in `hotkeys` in `config.json` (`null` disables):
+Each key takes a combination string (`null` disables):
 
 ```json
 {
   "hotkeys": {
-    "mute": "Ctrl+Shift+F9",
+    "mute": "Ctrl+Alt+M",
     "volume_up": null
   }
 }
 ```
 
+A combination another program already owns is reported in a dialog and disabled, so the remaining hotkeys keep working.
+
 #### System & settings
 
-- **Volume mixer** / **Sound settings** open the system tools.
+- **Volume mixer** / **Sound settings** open the system tools. **Open Hotkey Settings** opens the config folder for manual hotkey editing.
 - **Run at startup** toggles login autostart (grayed out while the state cannot be read).
 - The language submenu offers **Follow System** / **中文** / **English**.
 - **About** opens the release homepage. **Exit** quits (it also releases the hotkeys).
@@ -104,32 +104,32 @@ Runtime state lives outside the exe directory.
 
 #### 全局快捷键
 
-**全局快捷键**子菜单为每个动作绑定一个全局快捷键（默认全关）。
-打勾 = 已绑定标签里显示的组合。
-被其他程序占用的组合会弹窗报告并保持关闭，其余快捷键照常工作。
+默认无绑定。点击**打开快捷键设置**（在**打开声音设置**之下）打开配置文件夹，再改 `config.json` 里的 `hotkeys`——文件头有中英文注释，写明格式、动作与示例。保存后重启生效。
 
-| 动作 | 默认组合 | 步长 |
+| 动作 | 配置键 | 步长 |
 | --- | --- | --- |
-| 静音切换 | `Ctrl+Alt+M` | — |
-| 音量加 | `Ctrl+Alt+Up` | 每次 `2%` |
-| 音量减 | `Ctrl+Alt+Down` | 每次 `2%` |
-| 下一个输出设备 | `Ctrl+Alt+Right` | — |
-| 上一个输出设备 | `Ctrl+Alt+Left` | — |
+| 静音切换 | `mute` | — |
+| 音量加 | `volume_up` | 每次 `2%` |
+| 音量减 | `volume_down` | 每次 `2%` |
+| 下一个输出设备 | `next_device` | — |
+| 上一个输出设备 | `prev_device` | — |
 
-在 `config.json` 的 `hotkeys` 里填自己的组合（`null` 即关闭）：
+每个键填组合字符串（`null` 即关闭）：
 
 ```json
 {
   "hotkeys": {
-    "mute": "Ctrl+Shift+F9",
+    "mute": "Ctrl+Alt+M",
     "volume_up": null
   }
 }
 ```
 
+被其他程序占用的组合会弹窗报告并保持关闭，其余快捷键照常工作。
+
 #### 系统与设置
 
-- **音量合成器**／**声音设置**打开系统工具。
+- **音量合成器**／**声音设置**打开系统工具。**打开快捷键设置**打开配置文件夹，用于手动改快捷键。
 - **开机自启**开关登录自启（读取不到状态时置灰）。
 - 语言子菜单提供**跟随系统** / **中文** / **English**。
 - **关于**打开 release 主页。**退出**退出（同时释放快捷键）。

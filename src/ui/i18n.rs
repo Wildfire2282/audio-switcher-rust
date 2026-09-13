@@ -46,6 +46,20 @@ pub fn tr(key: &str, lang: Lang) -> String {
                 "Open Sound Settings".into()
             }
         }
+        "open_hotkey_settings" => {
+            if zh {
+                "打开快捷键设置".into()
+            } else {
+                "Open Hotkey Settings".into()
+            }
+        }
+        "config_error" => {
+            if zh {
+                "打开配置文件夹失败".into()
+            } else {
+                "Failed to open config folder".into()
+            }
+        }
         "autostart" => {
             if zh {
                 "开机自启".into()
@@ -125,48 +139,6 @@ pub fn tr(key: &str, lang: Lang) -> String {
                 "Auto Launch (status unknown)".into()
             }
         }
-        "hotkeys" => {
-            if zh {
-                "全局快捷键".into()
-            } else {
-                "Hotkeys".into()
-            }
-        }
-        "hk_mute" => {
-            if zh {
-                "静音切换".into()
-            } else {
-                "Toggle Mute".into()
-            }
-        }
-        "hk_volume_up" => {
-            if zh {
-                "音量加".into()
-            } else {
-                "Volume Up".into()
-            }
-        }
-        "hk_volume_down" => {
-            if zh {
-                "音量减".into()
-            } else {
-                "Volume Down".into()
-            }
-        }
-        "hk_next_device" => {
-            if zh {
-                "下一个输出设备".into()
-            } else {
-                "Next Output Device".into()
-            }
-        }
-        "hk_prev_device" => {
-            if zh {
-                "上一个输出设备".into()
-            } else {
-                "Previous Output Device".into()
-            }
-        }
         "no_devices" => {
             if zh {
                 "未检测到音频设备".into()
@@ -224,22 +196,14 @@ mod tests {
     }
 
     #[test]
-    fn every_hotkey_action_has_both_labels() {
-        // A missing key would render the raw id in the menu (tr passes
-        // unknown keys through verbatim), so cover the whole action set.
-        for action in crate::platform::hotkey::HotkeyAction::ALL {
-            for lang in [Lang::Zh, Lang::En] {
-                let label = tr(action.i18n_key(), lang);
-                assert_ne!(
-                    label,
-                    action.i18n_key(),
-                    "{} has no {lang} label",
-                    action.config_key()
-                );
-            }
-        }
-        assert_ne!(tr("hotkeys", Lang::Zh), "hotkeys");
-        assert_ne!(tr("hotkeys", Lang::En), "hotkeys");
+    fn hotkey_settings_labels() {
+        assert_eq!(tr("open_hotkey_settings", Lang::Zh), "打开快捷键设置");
+        assert_eq!(
+            tr("open_hotkey_settings", Lang::En),
+            "Open Hotkey Settings"
+        );
+        assert_ne!(tr("config_error", Lang::Zh), "config_error");
+        assert_ne!(tr("config_error", Lang::En), "config_error");
         assert_ne!(tr("no_devices", Lang::Zh), "no_devices");
         assert_ne!(tr("no_devices", Lang::En), "no_devices");
     }
