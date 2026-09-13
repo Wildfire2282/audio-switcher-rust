@@ -1,6 +1,6 @@
 [package]
 name = "audio-switcher"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Audio Switcher tray tool"
@@ -39,7 +39,6 @@ features = [
   "Win32_System_Com_StructuredStorage", # PropVariantClear for friendly names (real)
   "Win32_System_Variant", # VT_LPWSTR (real)
   "Win32_Media_Audio", # MMDeviceEnumerator, IMMNotificationClient (real)
-  "Win32_Media_Audio_Endpoints", # IAudioEndpointVolume + callback (real)
   "Win32_Devices_FunctionDiscovery", # PKEY_Device_FriendlyName (real)
   "Win32_System_Registry", # legacy autostart Run-value cleanup only (autostart)
   "Win32_Graphics_Gdi", # MonitorFromWindow for dialog centering (dialog)
@@ -89,4 +88,3 @@ opt-level = 2
 inherits = "release"
 debug = true
 strip = false
-panic = "unwind"

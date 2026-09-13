@@ -19,6 +19,10 @@ pub enum TrayError {
     /// apart from a bad icon (`{:#}` renders the full chain).
     #[error("tray icon build failed")]
     Build(#[from] tray_icon::Error),
+    /// The embedded tray RGBA bytes are invalid (deterministic packaging
+    /// error, not retried beyond the boot bound).
+    #[error("tray icon invalid")]
+    Icon(#[from] tray_icon::BadIcon),
 }
 
 /// Wrapper around `tray-icon`'s `TrayIcon` holding the menu handles.
@@ -40,7 +44,7 @@ impl TrayWrapper {
     /// Returns [`TrayError::Build`] when the tray icon cannot be created.
     pub fn new(state: &MenuState<'_>) -> Result<Self, TrayError> {
         let handles = build_menu(state);
-        let icon = make_icon(state.muted);
+        let icon = make_icon(state.muted)?;
         let tooltip = format_tooltip(
             state
                 .default_id
@@ -66,7 +70,13 @@ impl TrayWrapper {
 
     /// Update the tray icon for mute state (logs on failure, loop continues).
     pub fn update_icon(&self, muted: bool) {
-        let icon = make_icon(muted);
+        let icon = match make_icon(muted) {
+            Ok(icon) => icon,
+            Err(e) => {
+                tracing::warn!("tray make_icon failed: {e:?}");
+                return;
+            }
+        };
         if let Err(e) = self.tray.set_icon(Some(icon)) {
             tracing::warn!("tray set_icon failed: {e:?}");
         }

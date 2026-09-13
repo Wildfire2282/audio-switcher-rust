@@ -116,6 +116,11 @@ pub struct App<B: AudioBackend = RealBackend> {
     tray: TrayWrapper,
     wheel: WheelState,
     last_devices_rebuild: Instant,
+    /// Latched device-change notification. `poll_device_changed()` consumes
+    /// the backend flag, so a coalesced burst must stay latched here instead
+    /// of being dropped — otherwise the menu stays stale until the next
+    /// unrelated notification.
+    devices_pending: bool,
     hook: Option<hook::WheelHook>,
     hook_install_at: Instant,
     should_exit: bool,
@@ -252,6 +257,7 @@ impl<B: AudioBackend> App<B> {
             tray,
             wheel: WheelState::new(),
             last_devices_rebuild: Instant::now(),
+            devices_pending: false,
             hook: None,
             hook_install_at: Instant::now() + Duration::from_millis(180),
             should_exit: false,
@@ -599,13 +605,19 @@ impl<B: AudioBackend> App<B> {
         self.nudge_volume(total);
     }
     fn poll_devices(&mut self) {
-        if !self.backend.poll_device_changed() {
+        if self.backend.poll_device_changed() {
+            self.devices_pending = true;
+        }
+        if !self.devices_pending {
             return;
         }
         // coalesce bursts: IMMNotificationClient may fire Added/Removed/DefaultChanged in quick succession.
+        // The notification stays latched in `devices_pending` so the deferred
+        // rebuild is not lost.
         if self.last_devices_rebuild.elapsed() < Duration::from_millis(120) {
             return;
         }
+        self.devices_pending = false;
         self.last_devices_rebuild = Instant::now();
         if let Err(e) = self.backend.clamp_volume_if_needed(&self.cfg) {
             tracing::warn!("volume clamp failed: {e}");

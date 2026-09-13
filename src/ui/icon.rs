@@ -13,8 +13,13 @@ use tray_icon::Icon;
 static ICON_CACHE: LazyLock<Mutex<[Option<Icon>; 2]>> = LazyLock::new(|| Mutex::new([None, None]));
 
 /// Create (or fetch from cache) the tray icon for `muted`.
-#[must_use]
-pub fn make_icon(muted: bool) -> Icon {
+///
+/// # Errors
+///
+/// Returns the underlying `BadIcon` error when the embedded RGBA bytes
+/// are invalid; the caller surfaces it through [`TrayError`](super::tray::TrayError)
+/// (dialog + exit at startup) or logs it (runtime icon refresh).
+pub fn make_icon(muted: bool) -> Result<Icon, tray_icon::BadIcon> {
     let idx = usize::from(muted);
     if let Some(cached) = ICON_CACHE
         .lock()
@@ -22,21 +27,22 @@ pub fn make_icon(muted: bool) -> Icon {
         .get(idx)
         .and_then(Clone::clone)
     {
-        return cached;
+        return Ok(cached);
     }
     let rgba: &[u8] = if muted {
         include_bytes!("../../icons/tray_muted.rgba")
     } else {
         include_bytes!("../../icons/tray_unmuted.rgba")
     };
-    let icon = Icon::from_rgba(rgba.to_vec(), 32, 32).unwrap_or_else(|e| {
-        panic!(
+    let icon = Icon::from_rgba(rgba.to_vec(), 32, 32).map_err(|e| {
+        tracing::warn!(
             "tray icon rgba invalid: muted={muted} len={} err={e}",
             rgba.len()
-        )
-    });
+        );
+        e
+    })?;
     ICON_CACHE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)[idx] = Some(icon.clone());
-    icon
+    Ok(icon)
 }
